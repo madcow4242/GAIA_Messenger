@@ -39,7 +39,7 @@ GAIA_Messenger/
 ## Prerequisites
 * **Linux system** with Python 3.10+ installed.
 * A running **GAIA Desktop / Lemonade Server** instance, or any **OpenAI-API compatible backend** (e.g., vLLM, LM Studio, Ollama).
-* A unique topic string for `ntfy.sh` (or your own self-hosted ntfy server).
+* A unique topic string for `ntfy.sh` (or your own self-hosted ntfy server).  **Set this up before proceeding below.**
 
 ---
 
