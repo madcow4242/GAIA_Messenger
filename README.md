@@ -91,6 +91,9 @@ You do not need to build the mobile app to start using GAIA Messenger. The inclu
 4. Enter the **ntfy topic**, **AES-256 encryption key**, and **HMAC signing key** matching your daemon's `config.yaml`.
 5. Send a message! Prompts are encrypted and signed in your browser, sent over ntfy to your daemon, and responses are decrypted automatically as they arrive.
 
+### adding push message capabilities to your GAIA Agent
+There is a gaia_notify.py tool in the "tools" directory for this project.  See the README.md file in that folder for full details on how to install and use that tool with your custom agents.
+
 ---
 
 *(Note: Instructions for compiling the iOS client in Xcode are intentionally excluded from this document. Ensure you have appropriate Apple Developer provisioning profiles if compiling `iPhone/GAIA_MessengerApp.swift`).*
