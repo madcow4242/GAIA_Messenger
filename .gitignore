@@ -1,0 +1,15 @@
+./ntfy-ai-bridge/src/config.yaml
+./ntfy-ai-bridge/config.yaml
+config.yaml
+**/config.yaml
+**OLD
+**/OLD
+./OLD
+OLD
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/

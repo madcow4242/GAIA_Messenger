@@ -1,0 +1,973 @@
+/* ==============================================================================
+ * Project: GAIA Messenger
+ * File:    GAIA_Messenger.html
+ * Author:  Kevin Cazabon (kevin@cazabon.com)
+ * Version: 1.0.0 / 10/11/2026
+ * Copyright (c) 2026 Kevin Cazabon
+ *
+ * This software is released under the MIT License.
+ * https://opensource.org/licenses/MIT
+ * ============================================================================== */
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GAIA Messenger Web</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #f2f2f7; display: flex; flex-direction: column; height: 100vh; }
+    
+    header { background: #fff; padding: 12px 16px; border-bottom: 1px solid #e5e5ea; display: flex; justify-content: space-between; align-items: center; }
+    header h1 { font-size: 18px; font-weight: 600; color: #000; }
+    
+    /* Session Control Bar */
+    .session-bar { background: #fff; padding: 8px 16px; border-bottom: 1px solid #e5e5ea; display: flex; align-items: center; gap: 10px; }
+    .session-bar select { flex: 1; padding: 6px 10px; border: 1px solid #c7c7cc; border-radius: 8px; font-size: 13px; font-weight: 500; outline: none; background: #f2f2f7; color: #000; }
+    .btn-new-chat { background: #007aff; color: #fff; border: none; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    #chat-container { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
+    
+    .message-row { display: flex; flex-direction: column; max-width: 80%; }
+    .message-row.user { align-self: flex-end; align-items: flex-end; }
+    .message-row.agent { align-self: flex-start; align-items: flex-start; }
+    
+    .bubble { padding: 10px 14px; border-radius: 18px; font-size: 15px; line-height: 1.4; word-wrap: break-word; white-space: pre-wrap; }
+    .message-row.user .bubble { background: #007aff; color: #fff; border-bottom-right-radius: 4px; }
+    .message-row.agent .bubble { background: #e5e5ea; color: #000; border-bottom-left-radius: 4px; }
+    
+    .meta-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8e8e93; margin-top: 4px; padding: 0 4px; }
+    .agent-tag { font-weight: 600; color: #007aff; }
+    .delivery-icon { font-size: 10px; }
+    .delivered { color: #007aff; }
+    .pending { color: #8e8e93; }
+    
+    /* Attachment Preview Bar */
+    #staged-bar { display: none; background: #fff; padding: 8px 16px; border-top: 1px solid #e5e5ea; align-items: center; gap: 12px; }
+    #staged-preview { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; }
+
+    .input-area { background: #fff; padding: 12px 16px; border-top: 1px solid #e5e5ea; display: flex; gap: 8px; align-items: center; }
+    .input-area select { padding: 8px 10px; border: 1px solid #c7c7cc; border-radius: 12px; outline: none; font-size: 13px; font-weight: 600; background: #f2f2f7; color: #007aff; cursor: pointer; }
+    .input-area input[type="text"] { flex: 1; padding: 10px 14px; border: 1px solid #c7c7cc; border-radius: 20px; outline: none; font-size: 15px; }
+    .input-area button { background: #007aff; color: #fff; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-weight: bold; font-size: 16px; display: flex; align-items: center; justify-content: center; }
+    .clip-btn { background: none !important; color: #8e8e93 !important; font-size: 20px !important; width: auto !important; height: auto !important; padding: 0 4px; }
+
+    /* Image Attachment Styling in Bubbles */
+    .chat-img { max-width: 100%; max-height: 240px; border-radius: 12px; display: block; margin-bottom: 6px; cursor: pointer; }
+
+    /* Config Modal */
+    #settings-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); justify-content: center; align-items: center; z-index: 100; }
+    .modal-content { background: #fff; border-radius: 12px; width: 90%; max-width: 440px; padding: 20px; display: flex; flex-direction: column; gap: 10px; max-height: 90vh; overflow-y: auto; }
+    .modal-content h2 { font-size: 18px; margin-bottom: 4px; }
+    .modal-content label { font-size: 11px; color: #8e8e93; font-weight: 600; text-transform: uppercase; margin-top: 4px; }
+    .modal-content input, .modal-content select { padding: 8px 12px; border: 1px solid #c7c7cc; border-radius: 8px; font-size: 14px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+    .btn-secondary { background: #e5e5ea; color: #000; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+    .btn-primary { background: #007aff; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>GAIA Messenger</h1>
+    <button onclick="toggleSettings(true)" style="background:none; border:none; cursor:pointer; font-size:20px;">⚙️</button>
+  </header>
+
+  <!-- Session Selector Bar -->
+  <div class="session-bar">
+    <select id="session-select" title="Active Session" onchange="switchSession(this.value)"></select>
+    <button class="btn-new-chat" onclick="createNewSession()">➕ New Chat</button>
+  </div>
+
+  <div id="chat-container"></div>
+
+  <!-- Staged File Preview -->
+  <div id="staged-bar">
+    <img id="staged-preview" src="" alt="Attachment Preview">
+    <span style="font-size: 12px; color: #8e8e93;">Photo attached</span>
+    <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 16px;" onclick="clearStagedImage()">❌</button>
+  </div>
+
+  <div class="input-area">
+    <input type="file" id="file-input" accept="image/*" style="display: none;" onchange="handleFileSelect(event)">
+    <button class="clip-btn" onclick="document.getElementById('file-input').click()">📎</button>
+    
+    <!-- Agent Selector Dropdown -->
+    <select id="agent-select" title="Target Agent"></select>
+    
+    <input type="text" id="message-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
+    <button id="send-btn" onclick="sendMessage(event)">↑</button>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal">
+    <div class="modal-content">
+      <h2>Bridge & Security Settings</h2>
+      
+      <label>Server URL</label>
+      <input type="text" id="cfg-server" placeholder="https://ntfy.sh">
+
+      <label>NTFY Topic Name</label>
+      <input type="text" id="cfg-topic" placeholder="my-shared-company-channel">
+
+      <label>Target Bridge Instance ID</label>
+      <input type="text" id="cfg-target-id" placeholder="node-kevin-pa">
+
+      <label>Sender User ID</label>
+      <input type="text" id="cfg-sender-id" placeholder="user-kevin">
+
+      <label>HMAC Secret (Signatures)</label>
+      <input type="password" id="cfg-hmac-secret" placeholder="Shared HMAC Secret">
+
+      <label>E2EE Passphrase</label>
+      <input type="password" id="cfg-passphrase" placeholder="Shared E2EE Passphrase">
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+        <label style="margin: 0;">Known Agents</label>
+        <button type="button" class="btn-secondary" style="padding: 3px 8px; font-size: 11px;" onclick="requestAgentList()">🔄 Refresh List</button>
+      </div>
+      <input type="text" id="cfg-agents" placeholder="kevins-pa">
+
+      <label>Authorization Token (Optional)</label>
+      <input type="password" id="cfg-authorization" placeholder="Leave blank for no auth">
+
+      <label>History Retention</label>
+      <select id="cfg-retention">
+        <option value="1">1 Day</option>
+        <option value="3">3 Days</option>
+        <option value="7" selected>7 Days</option>
+        <option value="14">14 Days</option>
+        <option value="30">30 Days</option>
+      </select>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="toggleSettings(false)">Cancel</button>
+        <button class="btn-primary" onclick="saveSettings()">Save & Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const config = {
+      serverUrl: localStorage.getItem('ntfy_server') || "https://ntfy.sh",
+      topic: localStorage.getItem('ntfy_topic') || "my-shared-company-channel",
+      targetId: localStorage.getItem('ntfy_target_id') || "node-kevin-pa",
+      senderId: localStorage.getItem('ntfy_sender_id') || "user-kevin",
+      hmacSecret: localStorage.getItem('ntfy_hmac_secret') || "",
+      passphrase: localStorage.getItem('ntfy_passphrase') || "",
+      authorization: localStorage.getItem('ntfy_authorization') || "",
+      retentionDays: parseInt(localStorage.getItem('ntfy_retention_days') || "7"),
+      agents: JSON.parse(localStorage.getItem('gaia_known_agents') || '["kevins-pa"]')
+    };
+
+    let messages = [];
+    let sessions = JSON.parse(localStorage.getItem('gaia_sessions') || '{}');
+    let activeSessionId = localStorage.getItem('gaia_active_session') || "";
+    let eventSource = null;
+    let stagedFileBytes = null;
+    let stagedDataUrl = null;
+    const STATIC_SALT = new TextEncoder().encode("kevins-pa-salt-v1");
+
+    /* --- Smart Auto-Scroll Engine --- */
+    function isUserNearBottom(threshold = 140) {
+      const container = document.getElementById("chat-container");
+      if (!container) return true;
+      const distanceToBottom = container.scrollHeight - container.clientHeight - container.scrollTop;
+      return distanceToBottom <= threshold;
+    }
+
+    function scrollToBottom(force = false) {
+      const container = document.getElementById("chat-container");
+      if (!container) return;
+      if (force || isUserNearBottom()) {
+        requestAnimationFrame(() => {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: force ? "instant" : "smooth"
+          });
+        });
+      }
+    }
+
+    function arrayBufferToDataUrl(buffer, mimeType = "image/jpeg") {
+      let binary = "";
+      const bytes = new Uint8Array(buffer);
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return `data:${mimeType};base64,${btoa(binary)}`;
+    }
+
+    window.onload = () => {
+      populateAgentDropdown();
+      loadConfigToModal();
+      loadMessagesFromStorage();
+      ensureActiveSession();
+      renderSessionDropdown();
+      syncAgentFromActiveSession();
+      restartStream();
+    };
+
+    function getCurrentAgent() {
+      return (document.getElementById("agent-select").value || config.agents[0] || "kevins-pa").toLowerCase();
+    }
+
+    function populateAgentDropdown() {
+      const select = document.getElementById("agent-select");
+      select.innerHTML = "";
+      config.agents.forEach(agentId => {
+        const opt = document.createElement("option");
+        opt.value = agentId;
+        opt.textContent = `@${agentId}`;
+        select.appendChild(opt);
+      });
+    }
+
+    function registerDiscoveredAgent(agentId) {
+      if (!agentId || agentId.toLowerCase() === "system") return;
+      const cleanId = agentId.toLowerCase().trim();
+      if (!config.agents.includes(cleanId)) {
+        config.agents.push(cleanId);
+        localStorage.setItem('gaia_known_agents', JSON.stringify(config.agents));
+        populateAgentDropdown();
+
+        const cfgInput = document.getElementById("cfg-agents");
+        if (cfgInput) cfgInput.value = config.agents.join(", ");
+      }
+    }
+
+    function ensureActiveSession() {
+      const allSessions = getAllSessionsFlat();
+      if (allSessions.length === 0) {
+        const defaultAgent = getCurrentAgent();
+        const newId = `sess_${defaultAgent}_${Date.now()}`;
+        sessions[defaultAgent] = [newId];
+        activeSessionId = newId;
+        saveSessionsToStorage();
+      } else if (!activeSessionId || !allSessions.some(s => s.id === activeSessionId)) {
+        activeSessionId = allSessions[0].id;
+        localStorage.setItem('gaia_active_session', activeSessionId);
+      }
+    }
+
+    function getAllSessionsFlat() {
+      let flat = [];
+      Object.keys(sessions).forEach(agentId => {
+        if (Array.isArray(sessions[agentId])) {
+          sessions[agentId].forEach(sId => {
+            const parts = sId.split('_');
+            const ts = parseInt(parts[parts.length - 1]) || Date.now();
+            flat.push({ id: sId, agentId: agentId, timestamp: ts });
+          });
+        }
+      });
+      flat.sort((a, b) => b.timestamp - a.timestamp);
+      return flat;
+    }
+
+    function syncAgentFromActiveSession() {
+      if (!activeSessionId) return;
+      const parts = activeSessionId.split('_');
+      if (parts.length >= 3) {
+        const sessionAgent = parts.slice(1, parts.length - 1).join('_').toLowerCase();
+        if (sessionAgent) {
+          registerDiscoveredAgent(sessionAgent);
+          const agentSelect = document.getElementById("agent-select");
+          if (agentSelect) agentSelect.value = sessionAgent;
+        }
+      }
+    }
+
+    function switchSession(sessId) {
+      activeSessionId = sessId;
+      localStorage.setItem('gaia_active_session', activeSessionId);
+      syncAgentFromActiveSession();
+      renderMessages();
+      scrollToBottom(true);
+    }
+
+    function createNewSession() {
+      const currentAgent = getCurrentAgent();
+      const newId = `sess_${currentAgent}_${Date.now()}`;
+      if (!sessions[currentAgent]) sessions[currentAgent] = [];
+      sessions[currentAgent].unshift(newId);
+      activeSessionId = newId;
+      saveSessionsToStorage();
+      renderSessionDropdown();
+      renderMessages();
+      scrollToBottom(true);
+    }
+
+    function renderSessionDropdown() {
+      const select = document.getElementById("session-select");
+      select.innerHTML = "";
+      const allSessions = getAllSessionsFlat();
+
+      allSessions.forEach((sObj) => {
+        const opt = document.createElement("option");
+        opt.value = sObj.id;
+        const dateStr = new Date(sObj.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        opt.textContent = `Chat (${dateStr}) — @${sObj.agentId}`;
+        if (sObj.id === activeSessionId) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+
+    function saveSessionsToStorage() {
+      localStorage.setItem('gaia_sessions', JSON.stringify(sessions));
+      localStorage.setItem('gaia_active_session', activeSessionId);
+    }
+
+    function getAuthHeaders() {
+      const headers = {};
+      const token = config.authorization.trim();
+      if (token) {
+        if (token.toLowerCase().startsWith("bearer ") || token.toLowerCase().startsWith("basic ")) {
+          headers["Authorization"] = token;
+        } else {
+          headers["Authorization"] = "Bearer " + token;
+        }
+      }
+      return headers;
+    }
+
+    function loadMessagesFromStorage() {
+      try {
+        const stored = localStorage.getItem('gaia_chat_history');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const cutoff = Date.now() - (config.retentionDays * 86400 * 1000);
+          messages = parsed
+            .map(m => ({ ...m, time: new Date(m.time) }))
+            .filter(m => m.time.getTime() >= cutoff);
+          messages.sort((a, b) => a.time - b.time);
+        }
+      } catch (e) {
+        console.error("Failed loading chat history:", e);
+        messages = [];
+      }
+      renderMessages();
+      scrollToBottom(true);
+    }
+
+    function saveMessagesToStorage() {
+      try {
+        const cutoff = Date.now() - (config.retentionDays * 86400 * 1000);
+        const pruned = messages.filter(m => m.time.getTime() >= cutoff);
+        localStorage.setItem('gaia_chat_history', JSON.stringify(pruned));
+      } catch (e) {
+        console.error("Failed saving chat history:", e);
+      }
+    }
+
+    /* --- Cryptography & HMAC Signature Engine --- */
+    async function deriveKey(passphrase, saltBuffer) {
+      if (!passphrase || !window.crypto || !window.crypto.subtle) return null;
+      try {
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw", new TextEncoder().encode(passphrase.trim()), "PBKDF2", false, ["deriveKey"]
+        );
+        return await crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: saltBuffer, iterations: 100000, hash: "SHA-256" },
+          keyMaterial,
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["encrypt", "decrypt"]
+        );
+      } catch (e) {
+        console.error("Derive key failed:", e);
+        return null;
+      }
+    }
+
+    async function encryptBytes(arrayBuffer) {
+      if (!config.passphrase) return arrayBuffer;
+
+      const encoder = new TextEncoder();
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveKey(config.passphrase, salt);
+      if (!key) throw new Error("SubtleCrypto unavailable or key derivation failed.");
+
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, arrayBuffer);
+
+      const combined = new Uint8Array(salt.length + iv.length + ciphertext.byteLength);
+      combined.set(salt, 0);
+      combined.set(iv, 16);
+      combined.set(new Uint8Array(ciphertext), 28);
+      return combined.buffer;
+    }
+
+    async function decryptBytes(arrayBuffer) {
+      if (!config.passphrase) return arrayBuffer;
+      const data = new Uint8Array(arrayBuffer);
+
+      if (data.length >= 28) {
+        try {
+          const dynamicSalt = data.slice(0, 16);
+          const iv = data.slice(16, 28);
+          const ciphertext = data.slice(28);
+          const dynamicKey = await deriveKey(config.passphrase, dynamicSalt);
+          if (dynamicKey) {
+            return await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, dynamicKey, ciphertext);
+          }
+        } catch (e) {}
+      }
+
+      if (data.length >= 12) {
+        try {
+          const iv = data.slice(0, 12);
+          const ciphertext = data.slice(12);
+          const staticKey = await deriveKey(config.passphrase, STATIC_SALT);
+          if (staticKey) {
+            return await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, staticKey, ciphertext);
+          }
+        } catch (e) {}
+      }
+
+      throw new Error("Failed to decrypt payload.");
+    }
+
+    async function encryptText(plaintext) {
+      if (!config.passphrase) return plaintext;
+      const encoded = new TextEncoder().encode(plaintext);
+      const encrypted = await encryptBytes(encoded);
+      let binaryStr = "";
+      const bytes = new Uint8Array(encrypted);
+      for (let i = 0; i < bytes.length; i++) binaryStr += String.fromCharCode(bytes[i]);
+      return btoa(binaryStr);
+    }
+
+    async function decryptText(base64Payload) {
+      if (!config.passphrase || !base64Payload) return base64Payload;
+      try {
+        const cleanStr = base64Payload.trim().replace(/^"|"$/g, '');
+        const binaryStr = atob(cleanStr);
+        const data = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) data[i] = binaryStr.charCodeAt(i);
+
+        const decryptedBuffer = await decryptBytes(data.buffer);
+        return new TextDecoder().decode(decryptedBuffer);
+      } catch (e) {
+        return base64Payload;
+      }
+    }
+
+    async function createSignedEnvelope(promptText, sessionId) {
+      const encoder = new TextEncoder();
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      const ts = Math.floor(Date.now() / 1000);
+
+      const payload = {
+        session_id: sessionId,
+        text: promptText
+      };
+
+      // Canonicalize JSON matching python separators=(',', ':'), sort_keys=True
+      const payloadJson = `{"session_id":${JSON.stringify(sessionId)},"text":${JSON.stringify(promptText)}}`;
+      const sigBase = `${nonce}|${ts}|${payloadJson}`;
+
+      let signature = "";
+      if (config.hmacSecret) {
+        const hmacKey = await crypto.subtle.importKey(
+          "raw", encoder.encode(config.hmacSecret),
+          { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+        );
+        const sigBuffer = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(sigBase));
+        signature = Array.from(new Uint8Array(sigBuffer))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+
+      const envelope = {
+        target: config.targetId,
+        sender: config.senderId,
+        nonce: nonce,
+        ts: ts,
+        payload: payload,
+        sig: signature
+      };
+
+      return JSON.stringify(envelope);
+    }
+
+    function extractTextFromDecryptedPayload(rawString) {
+      if (!rawString || typeof rawString !== "string") return rawString;
+      const trimmed = rawString.trim();
+
+      if (trimmed.startsWith("[AGENTS_LIST]") || trimmed.startsWith("[SYSTEM")) {
+        return rawString;
+      }
+      
+      if (!trimmed.startsWith("{") && !trimmed.startsWith("[{") && !trimmed.startsWith('["')) {
+        return rawString; 
+      }
+
+      try {
+        let parsed = JSON.parse(trimmed);
+        if (parsed && parsed.payload && typeof parsed.payload.text === "string") return parsed.payload.text.trim();
+        if (parsed && typeof parsed.result === "string") return parsed.result.trim();
+        if (parsed && typeof parsed.response === "string") return parsed.response.trim();
+        if (parsed && typeof parsed.output === "string") return parsed.output.trim();
+
+        if (parsed && Array.isArray(parsed.content)) {
+          const texts = parsed.content
+            .map(item => (typeof item === "object" && item !== null ? item.text : ""))
+            .filter(Boolean);
+
+          if (texts.length > 0) return texts.join("\n\n").trim();
+        }
+        
+        if (parsed && typeof parsed.content === "string") return parsed.content.trim();
+        
+      } catch (e) {}
+      
+      return rawString;
+    }
+
+    function getAuthQueryParam() {
+      const token = config.authorization.trim();
+      if (!token) return "";
+      let authHeader = token;
+      if (!authHeader.toLowerCase().startsWith("bearer ") && !authHeader.toLowerCase().startsWith("basic ")) {
+        authHeader = "Bearer " + token;
+      }
+      return `&auth=${encodeURIComponent(btoa(authHeader))}`;
+    }
+
+    function restartStream() {
+      if (eventSource) eventSource.close();
+
+      const cleanedServer = config.serverUrl.replace(/\/+$/, "");
+      let sinceParam = `${config.retentionDays * 24}h`;
+      if (messages.length > 0) {
+        const newestTimestamp = Math.max(...messages.map(m => m.time.getTime()));
+        sinceParam = `${Math.floor(newestTimestamp / 1000)}`;
+      }
+
+      const streamUrl = `${cleanedServer}/${config.topic}/sse?since=${sinceParam}${getAuthQueryParam()}`;
+      eventSource = new EventSource(streamUrl);
+      eventSource.onmessage = (event) => handleSseEvent(event);
+    }
+
+    async function handleSseEvent(event) {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.event === "message") {
+          let rawPayload = (payload.message || "").trim();
+          let attachmentUrl = null;
+
+          if (payload.attachment && payload.attachment.url) {
+            const att = payload.attachment;
+            const attName = (att.name || "").toLowerCase();
+            const attType = (att.type || "").toLowerCase();
+
+            const isTextAttachment = (
+              attName.endsWith(".txt") ||
+              attName === "attachment" ||
+              attName === "attachment.txt" ||
+              attType.startsWith("text/")
+            );
+
+            if (isTextAttachment) {
+              try {
+                let response = await fetch(att.url);
+                if (!response.ok && config.authorization) {
+                  const authParam = getAuthQueryParam();
+                  const authenticatedUrl = att.url.includes("?") 
+                    ? `${att.url}${authParam}` 
+                    : `${att.url}?${authParam.replace(/^&/, "")}`;
+                  response = await fetch(authenticatedUrl);
+                }
+
+                if (response.ok) {
+                  const fetchedText = await response.text();
+                  if (fetchedText.trim()) rawPayload = fetchedText.trim();
+                }
+              } catch (fetchErr) {
+                console.error("❌ [NTFY] Failed to fetch text attachment:", fetchErr);
+              }
+              attachmentUrl = null;
+            } else {
+              attachmentUrl = att.url;
+            }
+          }
+
+          let displayText = rawPayload ? await decryptText(rawPayload) : "";
+
+          if (displayText.startsWith("[AGENTS_LIST]:")) {
+            try {
+              const jsonPart = displayText.replace("[AGENTS_LIST]:", "").trim();
+              const list = JSON.parse(jsonPart);
+              if (Array.isArray(list)) {
+                list.forEach(agent => registerDiscoveredAgent(agent));
+              }
+            } catch (err) {}
+            return;
+          }
+          if (displayText.startsWith("[SYSTEM_COMMAND:") || displayText.startsWith("[SYSTEM:")) return;
+
+          displayText = extractTextFromDecryptedPayload(displayText);
+
+          if (displayText.startsWith("You received a file:")) {
+            displayText = "⚠️ Unable to load attachment text content.";
+          }
+
+          const msgTime = new Date(payload.time * 1000);
+          let title = payload.title || "";
+          
+          // Identify agent responses vs user prompts
+          const isUser = !title.includes("[") && !title.includes("Assistant") && !title.includes("System");
+
+          let sessionTag = (payload.tags || []).find(t => t.startsWith("sid:"));
+          let msgSessionId = sessionTag ? sessionTag.replace("sid:", "") : activeSessionId;
+
+          // Session Fallback: If tag is generic bridge ID, bind it to active session
+          if (!msgSessionId || msgSessionId.startsWith("ntfy_") || msgSessionId.endsWith("_default")) {
+            msgSessionId = activeSessionId;
+          }
+
+          const localIndex = messages.findIndex(m => 
+            m.isFromUser && 
+            (m.id === payload.id || (m.id.startsWith("temp-") && m.text.trim() === displayText.trim()))
+          );
+
+          if (localIndex !== -1) {
+            messages[localIndex].id = payload.id;
+            messages[localIndex].isDelivered = true;
+            messages[localIndex].time = msgTime;
+            messages[localIndex].sessionId = msgSessionId;
+            if (displayText) messages[localIndex].text = displayText;
+            if (attachmentUrl) messages[localIndex].attachmentUrl = attachmentUrl;
+            saveMessagesToStorage();
+            renderMessages();
+          } else if (!messages.some(m => m.id === payload.id)) {
+            const msgObj = {
+              id: payload.id,
+              text: displayText,
+              attachmentUrl: attachmentUrl,
+              isFromUser: isUser,
+              agentId: getCurrentAgent(),
+              sessionId: msgSessionId,
+              isDelivered: true,
+              time: msgTime,
+              actions: payload.actions || null
+            };
+
+            messages.push(msgObj);
+            messages.sort((a, b) => a.time - b.time);
+            saveMessagesToStorage();
+            renderMessages();
+          }
+        }
+      } catch (e) {
+        console.error("Stream parse error:", e);
+      }
+    }
+
+    function handleFileSelect(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        stagedFileBytes = evt.target.result;
+        stagedDataUrl = arrayBufferToDataUrl(stagedFileBytes, file.type || "image/jpeg");
+        document.getElementById("staged-preview").src = stagedDataUrl;
+        document.getElementById("staged-bar").style.display = "flex";
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    async function requestAgentList() {
+      try {
+        const commandEnvelope = await createSignedEnvelope("!agents", activeSessionId);
+        let payloadText = commandEnvelope;
+
+        if (config.passphrase) {
+          payloadText = await encryptText(commandEnvelope);
+        }
+
+        const headers = getAuthHeaders();
+        headers["Title"] = "User Command";
+        headers["Tags"] = `sid:${activeSessionId}`;
+
+        const cleanedServer = config.serverUrl.replace(/\/+$/, "");
+        await fetch(`${cleanedServer}/${config.topic}`, {
+          method: "POST",
+          body: payloadText,
+          headers: headers
+        });
+      } catch (err) {}
+    }
+
+    function clearStagedImage() {
+      stagedFileBytes = null;
+      stagedDataUrl = null;
+      document.getElementById("file-input").value = "";
+      document.getElementById("staged-bar").style.display = "none";
+    }
+
+    async function sendMessage(e) {
+      if (e && e.preventDefault) e.preventDefault();
+
+      const inputEl = document.getElementById("message-input");
+      const selectedAgent = getCurrentAgent();
+      const text = inputEl.value.trim();
+      if (!text && !stagedFileBytes) return;
+
+      let formattedPrompt = text;
+      if (text && !text.startsWith("@")) {
+        formattedPrompt = `@${selectedAgent} ${text}`;
+      }
+
+      const tempId = "temp-" + Date.now();
+      let localImgUrl = stagedDataUrl;
+
+      // Construct signed envelope & encrypt
+      let signedEnvelope = await createSignedEnvelope(formattedPrompt, activeSessionId);
+      let payloadText = signedEnvelope;
+
+      if (config.passphrase && signedEnvelope) {
+        try {
+          payloadText = await encryptText(signedEnvelope);
+        } catch (encErr) {
+          alert("⚠️ Encryption Error: Web Crypto is disabled. Please run 'python3 -m http.server' and view via http://localhost:8000");
+          return;
+        }
+      }
+
+      const localMsg = {
+        id: tempId,
+        text: text,
+        localImgUrl: localImgUrl,
+        isFromUser: true,
+        agentId: selectedAgent,
+        sessionId: activeSessionId,
+        isDelivered: false,
+        time: new Date()
+      };
+
+      messages.push(localMsg);
+      saveMessagesToStorage();
+      
+      renderMessages();
+      scrollToBottom(true);
+      
+      inputEl.value = "";
+      const sendingBytes = stagedFileBytes;
+      clearStagedImage();
+
+      try {
+        const headers = getAuthHeaders();
+        headers["Tags"] = `sid:${activeSessionId}`;
+
+        const cleanedServer = config.serverUrl.replace(/\/+$/, "");
+
+        if (sendingBytes) {
+          headers["Filename"] = "enc_photo.bin";
+          if (payloadText) headers["Message"] = payloadText.replace(/[\r\n]+/g, " ");
+
+          let bodyPayload;
+          if (config.passphrase) {
+            try {
+              bodyPayload = await encryptBytes(sendingBytes);
+            } catch (encErr) {
+              alert("⚠️ Encryption Error: Failed to encrypt attachment bytes.");
+              return;
+            }
+          } else {
+            bodyPayload = sendingBytes;
+          }
+
+          const response = await fetch(`${cleanedServer}/${config.topic}`, {
+            method: "PUT",
+            body: bodyPayload,
+            headers: headers
+          });
+
+          if (response.ok) {
+            const resData = await response.json();
+            if (resData && resData.id) {
+              const idx = messages.findIndex(m => m.id === tempId);
+              if (idx !== -1) {
+                messages[idx].id = resData.id;
+                messages[idx].isDelivered = true;
+                saveMessagesToStorage();
+                renderMessages();
+              }
+            }
+          }
+        } else {
+          headers["Title"] = `User Prompt`;
+          const response = await fetch(`${cleanedServer}/${config.topic}`, {
+            method: "POST",
+            body: payloadText,
+            headers: headers
+          });
+
+          if (response.ok) {
+            const resData = await response.json();
+            if (resData && resData.id) {
+              const idx = messages.findIndex(m => m.id === tempId);
+              if (idx !== -1) {
+                messages[idx].id = resData.id;
+                messages[idx].isDelivered = true;
+                saveMessagesToStorage();
+                renderMessages();
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[NTFY SEND EXCEPTION]", err);
+      }
+    }
+
+    function renderMessages() {
+      const wasAtBottom = isUserNearBottom();
+      const container = document.getElementById("chat-container");
+      container.innerHTML = "";
+
+      const filtered = messages.filter(m => m.sessionId === activeSessionId);
+
+      filtered.forEach(m => {
+        const row = document.createElement("div");
+        row.className = `message-row ${m.isFromUser ? "user" : "agent"}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+
+        if (m.localImgUrl) {
+          const img = document.createElement("img");
+          img.className = "chat-img";
+          img.src = m.localImgUrl;
+          img.onload = () => { if (isUserNearBottom(200)) scrollToBottom(true); };
+          bubble.appendChild(img);
+        } else if (m.attachmentUrl) {
+          const imgContainer = document.createElement("div");
+          imgContainer.style.marginBottom = "6px";
+          imgContainer.textContent = "⌛ Loading attachment...";
+          bubble.appendChild(imgContainer);
+
+          fetchAndDecryptImage(m.attachmentUrl).then(src => {
+            if (src) {
+              const img = document.createElement("img");
+              img.className = "chat-img";
+              img.src = src;
+              img.onload = () => { if (isUserNearBottom(200)) scrollToBottom(true); };
+              imgContainer.innerHTML = "";
+              imgContainer.appendChild(img);
+              if (wasAtBottom) scrollToBottom(true);
+            } else {
+              imgContainer.textContent = "📎 Image attachment";
+            }
+          });
+        }
+
+        if (m.text) {
+          const textNode = document.createTextNode(m.text);
+          bubble.appendChild(textNode);
+        }
+
+        const metaRow = document.createElement("div");
+        metaRow.className = "meta-row";
+
+        if (!m.isFromUser && m.agentId) {
+          const tag = document.createElement("span");
+          tag.className = "agent-tag";
+          tag.textContent = `@${m.agentId}`;
+          metaRow.appendChild(tag);
+        }
+
+        const timeSpan = document.createElement("span");
+        timeSpan.textContent = m.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        metaRow.appendChild(timeSpan);
+
+        if (m.isFromUser) {
+          const deliveryIcon = document.createElement("span");
+          deliveryIcon.className = `delivery-icon ${m.isDelivered ? "delivered" : "pending"}`;
+          deliveryIcon.textContent = m.isDelivered ? "✓" : "🕒";
+          metaRow.appendChild(deliveryIcon);
+        }
+
+        row.appendChild(bubble);
+        row.appendChild(metaRow);
+        container.appendChild(row);
+      });
+
+      if (wasAtBottom) {
+        scrollToBottom(true);
+      }
+    }
+
+    async function fetchAndDecryptImage(url) {
+      try {
+        const headers = getAuthHeaders();
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) return null;
+
+        const arrayBuffer = await resp.arrayBuffer();
+        const decryptedBuffer = await decryptBytes(arrayBuffer);
+        return arrayBufferToDataUrl(decryptedBuffer, "image/jpeg");
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function handleKeyPress(e) {
+      if (e.key === "Enter") sendMessage(e);
+    }
+
+    function toggleSettings(show) {
+      document.getElementById("settings-modal").style.display = show ? "flex" : "none";
+    }
+
+    function loadConfigToModal() {
+      document.getElementById("cfg-server").value = config.serverUrl;
+      document.getElementById("cfg-topic").value = config.topic;
+      document.getElementById("cfg-target-id").value = config.targetId;
+      document.getElementById("cfg-sender-id").value = config.senderId;
+      document.getElementById("cfg-hmac-secret").value = config.hmacSecret;
+      document.getElementById("cfg-passphrase").value = config.passphrase;
+      document.getElementById("cfg-agents").value = config.agents.join(", ");
+      document.getElementById("cfg-authorization").value = config.authorization;
+      document.getElementById("cfg-retention").value = config.retentionDays;
+    }
+
+    function saveSettings() {
+      config.serverUrl = document.getElementById("cfg-server").value.trim() || "https://ntfy.sh";
+      config.topic = document.getElementById("cfg-topic").value.trim();
+      config.targetId = document.getElementById("cfg-target-id").value.trim() || "node-kevin-pa";
+      config.senderId = document.getElementById("cfg-sender-id").value.trim() || "user-kevin";
+      config.hmacSecret = document.getElementById("cfg-hmac-secret").value.trim();
+      config.passphrase = document.getElementById("cfg-passphrase").value.trim();
+      config.authorization = document.getElementById("cfg-authorization").value.trim();
+      config.retentionDays = parseInt(document.getElementById("cfg-retention").value);
+
+      const rawAgents = document.getElementById("cfg-agents").value.split(",");
+      config.agents = rawAgents.map(a => a.trim().toLowerCase()).filter(a => a.length > 0);
+      if (config.agents.length === 0) config.agents = ["kevins-pa"];
+
+      localStorage.setItem('ntfy_server', config.serverUrl);
+      localStorage.setItem('ntfy_topic', config.topic);
+      localStorage.setItem('ntfy_target_id', config.targetId);
+      localStorage.setItem('ntfy_sender_id', config.senderId);
+      localStorage.setItem('ntfy_hmac_secret', config.hmacSecret);
+      localStorage.setItem('ntfy_passphrase', config.passphrase);
+      localStorage.setItem('ntfy_authorization', config.authorization);
+      localStorage.setItem('ntfy_retention_days', config.retentionDays);
+      localStorage.setItem('gaia_known_agents', JSON.stringify(config.agents));
+
+      populateAgentDropdown();
+      ensureActiveSession();
+      renderSessionDropdown();
+      toggleSettings(false);
+      loadMessagesFromStorage();
+      restartStream();
+    }
+  </script>
+</body>
+</html>

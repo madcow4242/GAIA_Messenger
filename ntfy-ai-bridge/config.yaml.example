@@ -1,0 +1,26 @@
+# ntfy-ai-bridge / config.yaml
+
+bridge:
+  instance_id: "node-kevin-pa"      # Our target agent ID for anti-spoofing
+  display_name: "Assistant"         # Generic title for replies
+  port: 8085                        # Local API port for outbound tools to call
+
+security:
+  e2ee_passphrase: "Your passphrase for message encryption (strong text password)"
+  hmac_secret: "Your passphrase for message signing - ensuring nobody can spoof your messages"
+  enforce_signatures: true          # Drop messages lacking valid HMAC signatures
+  allowed_senders:                  # List of user IDs allowed to command this agent
+    - "user-kevin"
+
+ntfy:
+  server_url: "https://ntfy.sh"
+  topic: "kevins-userver-push-notifications-madcow4242"
+  auth_token: "Your ntfy.sh authorization token for private channels (leave blank if using a public channel)"                    # Optional: Bearer token for private ntfy instances
+
+backend:
+  type: "gaia"                      # 'gaia', 'openai', or 'ollama'
+  api_url: "http://127.0.0.1:4200"
+  agent_id: "kevins-pa"             # The actual GAIA agent ID to trigger
+  model_id: "Gemma-4-E2B-it-GGUF"          # Model name or alias running in Lemonade
+  system_prompt: "You are a helpful personal assistant."
+  timeout_seconds: 300
