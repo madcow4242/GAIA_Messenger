@@ -71,12 +71,27 @@ async def publish_notification(payload: dict = Body(...)):
     message = payload.get("message", "")
     priority = payload.get("priority", "default")
     session_id = payload.get("session_id")
+    attachment_path = payload.get("attachment_path")
 
-    if not message:
-        raise HTTPException(status_code=400, detail="Message field is required.")
+    if not message and not attachment_path:
+        raise HTTPException(status_code=400, detail="Message or attachment_path is required.")
+
+    attachment_bytes = None
+    filename = None
+    if attachment_path:
+        path_obj = Path(attachment_path).expanduser().resolve()
+        if not path_obj.is_file():
+            raise HTTPException(status_code=404, detail=f"Attachment file not found: {attachment_path}")
+        attachment_bytes = path_obj.read_bytes()
+        filename = path_obj.name
 
     success = await ntfy_client.send_notification(
-        title=title, message=message, priority=priority, session_id=session_id
+        title=title,
+        message=message,
+        priority=priority,
+        session_id=session_id,
+        attachment_bytes=attachment_bytes,
+        filename=filename,
     )
 
     if success:
