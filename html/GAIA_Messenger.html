@@ -1,13 +1,13 @@
 <!--
 ==============================================================================
- * Project: GAIA Messenger
- * File:    GAIA_Messenger.html
- * Author:  Kevin Cazabon (kevin@cazabon.com)
- * Version: 1.0.0 / 10/11/2026
- * Copyright (c) 2026 Kevin Cazabon
+- Project: GAIA Messenger
+- File:    GAIA_Messenger.html
+- Author:  Kevin Cazabon (kevin@cazabon.com)
+- Version: 1.1.0 / 10/13/2026
+- Copyright (c) 2026 Kevin Cazabon
  *
- * This software is released under the MIT License.
- * https://opensource.org/licenses/MIT
+- This software is released under the MIT License.
+- https://opensource.org/licenses/MIT
 ==============================================================================
 -->
 
@@ -15,19 +15,124 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>GAIA Messenger Web</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background-color: #f2f2f7; display: flex; flex-direction: column; height: 100vh; }
-    
-    header { background: #fff; padding: 12px 16px; border-bottom: 1px solid #e5e5ea; display: flex; justify-content: space-between; align-items: center; }
-    header h1 { font-size: 18px; font-weight: 600; color: #000; }
-    
-    /* Session Control Bar */
-    .session-bar { background: #fff; padding: 8px 16px; border-bottom: 1px solid #e5e5ea; display: flex; align-items: center; gap: 10px; }
-    .session-bar select { flex: 1; padding: 6px 10px; border: 1px solid #c7c7cc; border-radius: 8px; font-size: 13px; font-weight: 500; outline: none; background: #f2f2f7; color: #000; }
-    .btn-new-chat { background: #007aff; color: #fff; border: none; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: #f2f2f7; display: flex; height: 100vh; overflow: hidden; color: #1c1c1e; }
+
+    /* App Shell Layout */
+    #app-container { display: flex; width: 100vw; height: 100vh; position: relative; overflow: hidden; }
+
+    /* Sidebar / Conversation Drawer */
+    #sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 20; backdrop-filter: blur(2px); }
+    #sidebar {
+      width: 320px;
+      max-width: 85vw;
+      background: #ffffff;
+      border-right: 1px solid #e5e5ea;
+      display: flex;
+      flex-direction: column;
+      z-index: 30;
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .sidebar-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #e5e5ea;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #fcfcfd;
+    }
+    .sidebar-header h2 { font-size: 16px; font-weight: 700; color: #1c1c1e; }
+    .btn-new-chat-sidebar {
+      background: #007aff;
+      color: #fff;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-new-chat-sidebar:hover { background: #0062cc; }
+
+    #history-container { flex: 1; overflow-y: auto; padding: 8px 12px; }
+    .history-group-header {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #8e8e93;
+      margin: 14px 8px 6px 8px;
+    }
+    .history-item {
+      padding: 9px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 4px;
+      position: relative;
+      transition: background 0.15s ease;
+    }
+    .history-item:hover { background: #f2f2f7; }
+    .history-item.active { background: #e5f1ff; }
+    .history-item-top { display: flex; justify-content: space-between; align-items: center; }
+    .history-item-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #1c1c1e;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+    }
+    .history-item.active .history-item-title { color: #007aff; }
+    .history-item-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #8e8e93; }
+    .badge-agent {
+      background: #e5e5ea;
+      color: #3a3a3c;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 10px;
+    }
+    .history-item.active .badge-agent { background: #cce4ff; color: #0062cc; }
+    .btn-del-session {
+      display: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #8e8e93;
+      font-size: 12px;
+      padding: 2px 4px;
+    }
+    .history-item:hover .btn-del-session { display: block; }
+    .btn-del-session:hover { color: #ff3b30; }
+
+    /* Main Chat Layout */
+    #main-chat { flex: 1; display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #f2f2f7; }
+
+    header {
+      background: #ffffff;
+      padding: 10px 16px;
+      border-bottom: 1px solid #e5e5ea;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .btn-icon { background: none; border: none; cursor: pointer; font-size: 18px; color: #1c1c1e; display: flex; align-items: center; }
+    .header-title-box { display: flex; flex-direction: column; }
+    .header-title-box h1 { font-size: 15px; font-weight: 700; color: #000; line-height: 1.2; }
+    .header-subtitle { font-size: 11px; color: #8e8e93; font-weight: 500; display: flex; align-items: center; gap: 4px; }
+    .active-agent-pill { color: #007aff; font-weight: 600; }
 
     #chat-container { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
     
@@ -44,21 +149,31 @@
     .delivery-icon { font-size: 10px; }
     .delivered { color: #007aff; }
     .pending { color: #8e8e93; }
-    
-    /* Attachment Preview Bar */
+
+    /* Staged Attachment Preview Bar */
     #staged-bar { display: none; background: #fff; padding: 8px 16px; border-top: 1px solid #e5e5ea; align-items: center; gap: 12px; }
     #staged-preview { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; }
 
-    .input-area { background: #fff; padding: 12px 16px; border-top: 1px solid #e5e5ea; display: flex; gap: 8px; align-items: center; }
-    .input-area select { padding: 8px 10px; border: 1px solid #c7c7cc; border-radius: 12px; outline: none; font-size: 13px; font-weight: 600; background: #f2f2f7; color: #007aff; cursor: pointer; }
+    /* Input Dock */
+    .input-area { background: #fff; padding: 10px 16px; border-top: 1px solid #e5e5ea; display: flex; gap: 8px; align-items: center; }
+    .input-area select {
+      padding: 8px 10px;
+      border: 1px solid #c7c7cc;
+      border-radius: 12px;
+      outline: none;
+      font-size: 13px;
+      font-weight: 600;
+      background: #f2f2f7;
+      color: #007aff;
+      cursor: pointer;
+    }
     .input-area input[type="text"] { flex: 1; padding: 10px 14px; border: 1px solid #c7c7cc; border-radius: 20px; outline: none; font-size: 15px; }
     .input-area button { background: #007aff; color: #fff; border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-weight: bold; font-size: 16px; display: flex; align-items: center; justify-content: center; }
     .clip-btn { background: none !important; color: #8e8e93 !important; font-size: 20px !important; width: auto !important; height: auto !important; padding: 0 4px; }
 
-    /* Image Attachment Styling in Bubbles */
     .chat-img { max-width: 100%; max-height: 240px; border-radius: 12px; display: block; margin-bottom: 6px; cursor: pointer; }
 
-    /* Config Modal */
+    /* Modal Styling */
     #settings-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); justify-content: center; align-items: center; z-index: 100; }
     .modal-content { background: #fff; border-radius: 12px; width: 90%; max-width: 440px; padding: 20px; display: flex; flex-direction: column; gap: 10px; max-height: 90vh; overflow-y: auto; }
     .modal-content h2 { font-size: 18px; margin-bottom: 4px; }
@@ -67,39 +182,67 @@
     .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
     .btn-secondary { background: #e5e5ea; color: #000; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
     .btn-primary { background: #007aff; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
+
+    /* Mobile Responsive Logic */
+    @media (max-width: 768px) {
+      #sidebar { position: fixed; top: 0; bottom: 0; left: 0; transform: translateX(-100%); }
+      #sidebar.open { transform: translateX(0); }
+      #sidebar-overlay.open { display: block; }
+    }
   </style>
 </head>
 <body>
 
-  <header>
-    <h1>GAIA Messenger</h1>
-    <button onclick="toggleSettings(true)" style="background:none; border:none; cursor:pointer; font-size:20px;">⚙️</button>
-  </header>
+  <div id="app-container">
+    <!-- Backdrop Overlay for Mobile -->
+    <div id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
-  <!-- Session Selector Bar -->
-  <div class="session-bar">
-    <select id="session-select" title="Active Session" onchange="switchSession(this.value)"></select>
-    <button class="btn-new-chat" onclick="createNewSession()">➕ New Chat</button>
-  </div>
+    <!-- Grouped Conversation Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h2>Conversations</h2>
+        <button class="btn-new-chat-sidebar" onclick="createNewSession()">➕ New Chat</button>
+      </div>
+      <div id="history-container"></div>
+    </aside>
 
-  <div id="chat-container"></div>
+    <!-- Main Message Area -->
+    <main id="main-chat">
+      <header>
+        <div class="header-left">
+          <button class="btn-icon" onclick="toggleSidebar()" title="Toggle History">☰</button>
+          <div class="header-title-box">
+            <h1 id="active-session-title">GAIA Messenger</h1>
+            <div class="header-subtitle">
+              <span>Agent:</span>
+              <span id="active-session-agent-pill" class="active-agent-pill">@kevins-pa</span>
+            </div>
+          </div>
+        </div>
+        <button onclick="toggleSettings(true)" class="btn-icon" title="Settings">⚙️</button>
+      </header>
 
-  <!-- Staged File Preview -->
-  <div id="staged-bar">
-    <img id="staged-preview" src="" alt="Attachment Preview">
-    <span style="font-size: 12px; color: #8e8e93;">Photo attached</span>
-    <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 16px;" onclick="clearStagedImage()">❌</button>
-  </div>
+      <div id="chat-container"></div>
 
-  <div class="input-area">
-    <input type="file" id="file-input" accept="image/*" style="display: none;" onchange="handleFileSelect(event)">
-    <button class="clip-btn" onclick="document.getElementById('file-input').click()">📎</button>
-    
-    <!-- Agent Selector Dropdown -->
-    <select id="agent-select" title="Target Agent"></select>
-    
-    <input type="text" id="message-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
-    <button id="send-btn" onclick="sendMessage(event)">↑</button>
+      <!-- Attachment Preview -->
+      <div id="staged-bar">
+        <img id="staged-preview" src="" alt="Attachment Preview">
+        <span style="font-size: 12px; color: #8e8e93;">Photo attached</span>
+        <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 16px;" onclick="clearStagedImage()">❌</button>
+      </div>
+
+      <!-- Input Dock -->
+      <div class="input-area">
+        <input type="file" id="file-input" accept="image/*" style="display: none;" onchange="handleFileSelect(event)">
+        <button class="clip-btn" onclick="document.getElementById('file-input').click()">📎</button>
+        
+        <!-- Target Agent Dropdown -->
+        <select id="agent-select" title="Target Agent" onchange="handleAgentChange(this.value)"></select>
+        
+        <input type="text" id="message-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
+        <button id="send-btn" onclick="sendMessage(event)">↑</button>
+      </div>
+    </main>
   </div>
 
   <!-- Settings Modal -->
@@ -164,12 +307,39 @@
     };
 
     let messages = [];
-    let sessions = JSON.parse(localStorage.getItem('gaia_sessions') || '{}');
+    let sessions = []; // Array of { id, title, agentId, createdAt, updatedAt }
     let activeSessionId = localStorage.getItem('gaia_active_session') || "";
     let eventSource = null;
     let stagedFileBytes = null;
     let stagedDataUrl = null;
     const STATIC_SALT = new TextEncoder().encode("kevins-pa-salt-v1");
+
+    /* --- Smart Audio Alert & Web Push Engine --- */
+    function playNotificationSound() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08); // A5
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.3);
+      } catch (e) {}
+    }
+
+    function triggerAlert(title, body) {
+      playNotificationSound();
+      if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+        try {
+          new Notification(title, { body: body.slice(0, 120), icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" });
+        } catch (e) {}
+      }
+    }
 
     /* --- Smart Auto-Scroll Engine --- */
     function isUserNearBottom(threshold = 140) {
@@ -202,14 +372,286 @@
     }
 
     window.onload = () => {
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+      loadMessagesFromStorage();
+      loadSessionsFromStorage();
       populateAgentDropdown();
       loadConfigToModal();
-      loadMessagesFromStorage();
       ensureActiveSession();
-      renderSessionDropdown();
-      syncAgentFromActiveSession();
+      renderSidebar();
+      updateHeaderMetadata();
+      renderMessages();
       restartStream();
     };
+
+    /* --- Session Lifecycle & Storage --- */
+    function generateCleanTitle(text) {
+      if (!text) return "New Conversation";
+      let clean = text.replace(/^@\w+\s+/, '').trim();
+      if (!clean) return "New Conversation";
+      return clean.length > 28 ? clean.substring(0, 28) + "…" : clean;
+    }
+
+    function loadSessionsFromStorage() {
+      const stored = localStorage.getItem('gaia_sessions_v2');
+      if (stored) {
+        try {
+          sessions = JSON.parse(stored);
+          return;
+        } catch (e) {}
+      }
+
+      // Legacy Migration (from v1 object mapping)
+      const legacyStored = localStorage.getItem('gaia_sessions');
+      sessions = [];
+      if (legacyStored) {
+        try {
+          const legacyObj = JSON.parse(legacyStored);
+          Object.keys(legacyObj).forEach(agentId => {
+            if (Array.isArray(legacyObj[agentId])) {
+              legacyObj[agentId].forEach(sId => {
+                const parts = sId.split('_');
+                const ts = parseInt(parts[parts.length - 1]) || Date.now();
+                const firstMsg = messages.find(m => m.sessionId === sId && m.isFromUser);
+                const title = firstMsg ? generateCleanTitle(firstMsg.text) : "Conversation";
+                sessions.push({
+                  id: sId,
+                  title: title,
+                  agentId: agentId,
+                  createdAt: ts,
+                  updatedAt: ts
+                });
+              });
+            }
+          });
+        } catch (e) {}
+      }
+
+      if (sessions.length === 0) {
+        const initAgent = config.agents[0] || "kevins-pa";
+        const newId = `sess_${initAgent}_${Date.now()}`;
+        sessions.push({
+          id: newId,
+          title: "New Conversation",
+          agentId: initAgent,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        });
+      }
+      saveSessionsToStorage();
+    }
+
+    function saveSessionsToStorage() {
+      localStorage.setItem('gaia_sessions_v2', JSON.stringify(sessions));
+      localStorage.setItem('gaia_active_session', activeSessionId);
+    }
+
+    function getActiveSession() {
+      return sessions.find(s => s.id === activeSessionId) || null;
+    }
+
+    function ensureActiveSession() {
+      if (sessions.length === 0) {
+        createNewSession();
+        return;
+      }
+      const existing = sessions.find(s => s.id === activeSessionId);
+      if (!existing) {
+        activeSessionId = sessions[0].id;
+        localStorage.setItem('gaia_active_session', activeSessionId);
+      }
+      syncDropdownWithActiveSession();
+    }
+
+    function createNewSession() {
+      const currentAgent = getCurrentAgent();
+      const newSession = {
+        id: `sess_${currentAgent}_${Date.now()}`,
+        title: "New Conversation",
+        agentId: currentAgent,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      sessions.unshift(newSession);
+      activeSessionId = newSession.id;
+      saveSessionsToStorage();
+      renderSidebar();
+      updateHeaderMetadata();
+      syncDropdownWithActiveSession();
+      renderMessages();
+      scrollToBottom(true);
+      toggleSidebar(false);
+    }
+
+    function switchSession(sessionId) {
+      activeSessionId = sessionId;
+      localStorage.setItem('gaia_active_session', activeSessionId);
+      syncDropdownWithActiveSession();
+      updateHeaderMetadata();
+      renderSidebar();
+      renderMessages();
+      scrollToBottom(true);
+      toggleSidebar(false);
+    }
+
+    function deleteSession(e, sessionId) {
+      if (e) e.stopPropagation();
+      if (!confirm("Delete this conversation thread?")) return;
+
+      messages = messages.filter(m => m.sessionId !== sessionId);
+      sessions = sessions.filter(s => s.id !== sessionId);
+
+      saveMessagesToStorage();
+
+      if (sessions.length === 0) {
+        createNewSession();
+      } else {
+        if (activeSessionId === sessionId) {
+          activeSessionId = sessions[0].id;
+        }
+        saveSessionsToStorage();
+        renderSidebar();
+        updateHeaderMetadata();
+        renderMessages();
+      }
+    }
+
+    function handleAgentChange(newAgent) {
+      const currentAgent = newAgent.toLowerCase();
+      
+      // Find the most recent session for this specific agent, or create a fresh one
+      const existingForAgent = sessions.find(s => s.agentId.toLowerCase() === currentAgent);
+      
+      if (existingForAgent) {
+        switchSession(existingForAgent.id);
+      } else {
+        // Spin up a brand new session bound to this agent
+        const newSession = {
+          id: `sess_${currentAgent}_${Date.now()}`,
+          title: "New Conversation",
+          agentId: currentAgent,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        sessions.unshift(newSession);
+        activeSessionId = newSession.id;
+        saveSessionsToStorage();
+        renderSidebar();
+        updateHeaderMetadata();
+        renderMessages();
+        scrollToBottom(true);
+      }
+    }
+
+    function handleAgentChange_OLD(newAgent) {
+      const active = getActiveSession();
+      if (active) {
+        active.agentId = newAgent;
+        saveSessionsToStorage();
+        renderSidebar();
+        updateHeaderMetadata();
+      }
+    }
+
+    function syncDropdownWithActiveSession() {
+      const active = getActiveSession();
+      if (!active) return;
+      const select = document.getElementById("agent-select");
+      if (select && active.agentId) {
+        registerDiscoveredAgent(active.agentId);
+        select.value = active.agentId.toLowerCase();
+      }
+    }
+
+    function updateHeaderMetadata() {
+      const active = getActiveSession();
+      if (!active) return;
+      document.getElementById("active-session-title").textContent = active.title;
+      document.getElementById("active-session-agent-pill").textContent = `@${active.agentId}`;
+    }
+
+    /* --- Grouped Sidebar Rendering --- */
+    function categorizeSessions(sessionList) {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const startOfYesterday = startOfToday - 86400000;
+      const startOf7Days = startOfToday - (6 * 86400000);
+
+      const groups = { today: [], yesterday: [], lastWeek: [], older: [] };
+
+      sessionList.slice().sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt)).forEach(s => {
+        const t = s.updatedAt || s.createdAt;
+        if (t >= startOfToday) groups.today.push(s);
+        else if (t >= startOfYesterday) groups.yesterday.push(s);
+        else if (t >= startOf7Days) groups.lastWeek.push(s);
+        else groups.older.push(s);
+      });
+
+      return groups;
+    }
+
+    function renderSidebar() {
+      const container = document.getElementById("history-container");
+      container.innerHTML = "";
+      const groups = categorizeSessions(sessions);
+
+      const groupConfig = [
+        { label: "Today", items: groups.today },
+        { label: "Yesterday", items: groups.yesterday },
+        { label: "Previous 7 Days", items: groups.lastWeek },
+        { label: "Older", items: groups.older }
+      ];
+
+      groupConfig.forEach(({ label, items }) => {
+        if (items.length === 0) return;
+
+        const header = document.createElement("div");
+        header.className = "history-group-header";
+        header.textContent = label;
+        container.appendChild(header);
+
+        items.forEach(session => {
+          const item = document.createElement("div");
+          item.className = `history-item ${session.id === activeSessionId ? "active" : ""}`;
+          item.onclick = () => switchSession(session.id);
+
+          const timeStr = new Date(session.updatedAt || session.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+          item.innerHTML = `
+            <div class="history-item-top">
+              <span class="history-item-title">${escapeHTML(session.title)}</span>
+              <button class="btn-del-session" onclick="deleteSession(event, '${session.id}')" title="Delete thread">🗑️</button>
+            </div>
+            <div class="history-item-meta">
+              <span class="badge-agent">@${escapeHTML(session.agentId)}</span>
+              <span>${timeStr}</span>
+            </div>
+          `;
+          container.appendChild(item);
+        });
+      });
+    }
+
+    function toggleSidebar(forceState) {
+      const sidebar = document.getElementById("sidebar");
+      const overlay = document.getElementById("sidebar-overlay");
+      const shouldOpen = forceState !== undefined ? forceState : !sidebar.classList.contains("open");
+      if (shouldOpen) {
+        sidebar.classList.add("open");
+        overlay.classList.add("open");
+      } else {
+        sidebar.classList.remove("open");
+        overlay.classList.remove("open");
+      }
+    }
+
+    function escapeHTML(str) {
+      return (str || "").replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[tag] || tag));
+    }
 
     function getCurrentAgent() {
       return (document.getElementById("agent-select").value || config.agents[0] || "kevins-pa").toLowerCase();
@@ -224,6 +666,7 @@
         opt.textContent = `@${agentId}`;
         select.appendChild(opt);
       });
+      syncDropdownWithActiveSession();
     }
 
     function registerDiscoveredAgent(agentId) {
@@ -237,88 +680,6 @@
         const cfgInput = document.getElementById("cfg-agents");
         if (cfgInput) cfgInput.value = config.agents.join(", ");
       }
-    }
-
-    function ensureActiveSession() {
-      const allSessions = getAllSessionsFlat();
-      if (allSessions.length === 0) {
-        const defaultAgent = getCurrentAgent();
-        const newId = `sess_${defaultAgent}_${Date.now()}`;
-        sessions[defaultAgent] = [newId];
-        activeSessionId = newId;
-        saveSessionsToStorage();
-      } else if (!activeSessionId || !allSessions.some(s => s.id === activeSessionId)) {
-        activeSessionId = allSessions[0].id;
-        localStorage.setItem('gaia_active_session', activeSessionId);
-      }
-    }
-
-    function getAllSessionsFlat() {
-      let flat = [];
-      Object.keys(sessions).forEach(agentId => {
-        if (Array.isArray(sessions[agentId])) {
-          sessions[agentId].forEach(sId => {
-            const parts = sId.split('_');
-            const ts = parseInt(parts[parts.length - 1]) || Date.now();
-            flat.push({ id: sId, agentId: agentId, timestamp: ts });
-          });
-        }
-      });
-      flat.sort((a, b) => b.timestamp - a.timestamp);
-      return flat;
-    }
-
-    function syncAgentFromActiveSession() {
-      if (!activeSessionId) return;
-      const parts = activeSessionId.split('_');
-      if (parts.length >= 3) {
-        const sessionAgent = parts.slice(1, parts.length - 1).join('_').toLowerCase();
-        if (sessionAgent) {
-          registerDiscoveredAgent(sessionAgent);
-          const agentSelect = document.getElementById("agent-select");
-          if (agentSelect) agentSelect.value = sessionAgent;
-        }
-      }
-    }
-
-    function switchSession(sessId) {
-      activeSessionId = sessId;
-      localStorage.setItem('gaia_active_session', activeSessionId);
-      syncAgentFromActiveSession();
-      renderMessages();
-      scrollToBottom(true);
-    }
-
-    function createNewSession() {
-      const currentAgent = getCurrentAgent();
-      const newId = `sess_${currentAgent}_${Date.now()}`;
-      if (!sessions[currentAgent]) sessions[currentAgent] = [];
-      sessions[currentAgent].unshift(newId);
-      activeSessionId = newId;
-      saveSessionsToStorage();
-      renderSessionDropdown();
-      renderMessages();
-      scrollToBottom(true);
-    }
-
-    function renderSessionDropdown() {
-      const select = document.getElementById("session-select");
-      select.innerHTML = "";
-      const allSessions = getAllSessionsFlat();
-
-      allSessions.forEach((sObj) => {
-        const opt = document.createElement("option");
-        opt.value = sObj.id;
-        const dateStr = new Date(sObj.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        opt.textContent = `Chat (${dateStr}) — @${sObj.agentId}`;
-        if (sObj.id === activeSessionId) opt.selected = true;
-        select.appendChild(opt);
-      });
-    }
-
-    function saveSessionsToStorage() {
-      localStorage.setItem('gaia_sessions', JSON.stringify(sessions));
-      localStorage.setItem('gaia_active_session', activeSessionId);
     }
 
     function getAuthHeaders() {
@@ -349,8 +710,6 @@
         console.error("Failed loading chat history:", e);
         messages = [];
       }
-      renderMessages();
-      scrollToBottom(true);
     }
 
     function saveMessagesToStorage() {
@@ -363,7 +722,7 @@
       }
     }
 
-    /* --- Cryptography & HMAC Signature Engine --- */
+    /* --- Cryptography & Canonical HMAC Engine --- */
     async function deriveKey(passphrase, saltBuffer) {
       if (!passphrase || !window.crypto || !window.crypto.subtle) return null;
       try {
@@ -386,11 +745,10 @@
     async function encryptBytes(arrayBuffer) {
       if (!config.passphrase) return arrayBuffer;
 
-      const encoder = new TextEncoder();
       const salt = crypto.getRandomValues(new Uint8Array(16));
       const iv = crypto.getRandomValues(new Uint8Array(12));
       const key = await deriveKey(config.passphrase, salt);
-      if (!key) throw new Error("SubtleCrypto unavailable or key derivation failed.");
+      if (!key) throw new Error("Key derivation failed.");
 
       const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, arrayBuffer);
 
@@ -456,19 +814,24 @@
       }
     }
 
-    async function createSignedEnvelope(promptText, sessionId) {
+    /* Envelope with Canonical JSON Key Ordering for Python Bridge HMAC Matching */
+    async function createSignedEnvelope(promptText, sessionId, agentId) {
       const encoder = new TextEncoder();
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
         .map(b => b.toString(16).padStart(2, '0')).join('');
       const ts = Math.floor(Date.now() / 1000);
 
+      // Explicitly include both agent_id and agent_type
       const payload = {
+        agent_id: agentId,
+        agent_type: agentId,
         session_id: sessionId,
         text: promptText
       };
 
-      // Canonicalize JSON matching python separators=(',', ':'), sort_keys=True
-      const payloadJson = `{"session_id":${JSON.stringify(sessionId)},"text":${JSON.stringify(promptText)}}`;
+      // Match Python: json.dumps(payload, separators=(',', ':'), sort_keys=True)
+      const sortedKeys = Object.keys(payload).sort();
+      const payloadJson = "{" + sortedKeys.map(k => `${JSON.stringify(k)}:${JSON.stringify(payload[k])}`).join(",") + "}";
       const sigBase = `${nonce}|${ts}|${payloadJson}`;
 
       let signature = "";
@@ -498,13 +861,8 @@
       if (!rawString || typeof rawString !== "string") return rawString;
       const trimmed = rawString.trim();
 
-      if (trimmed.startsWith("[AGENTS_LIST]") || trimmed.startsWith("[SYSTEM")) {
-        return rawString;
-      }
-      
-      if (!trimmed.startsWith("{") && !trimmed.startsWith("[{") && !trimmed.startsWith('["')) {
-        return rawString; 
-      }
+      if (trimmed.startsWith("[AGENTS_LIST]") || trimmed.startsWith("[SYSTEM")) return rawString;
+      if (!trimmed.startsWith("{") && !trimmed.startsWith("[{") && !trimmed.startsWith('["')) return rawString;
 
       try {
         let parsed = JSON.parse(trimmed);
@@ -517,12 +875,10 @@
           const texts = parsed.content
             .map(item => (typeof item === "object" && item !== null ? item.text : ""))
             .filter(Boolean);
-
           if (texts.length > 0) return texts.join("\n\n").trim();
         }
         
         if (parsed && typeof parsed.content === "string") return parsed.content.trim();
-        
       } catch (e) {}
       
       return rawString;
@@ -588,7 +944,7 @@
                   if (fetchedText.trim()) rawPayload = fetchedText.trim();
                 }
               } catch (fetchErr) {
-                console.error("❌ [NTFY] Failed to fetch text attachment:", fetchErr);
+                console.error("❌ Failed to fetch text attachment:", fetchErr);
               }
               attachmentUrl = null;
             } else {
@@ -602,9 +958,7 @@
             try {
               const jsonPart = displayText.replace("[AGENTS_LIST]:", "").trim();
               const list = JSON.parse(jsonPart);
-              if (Array.isArray(list)) {
-                list.forEach(agent => registerDiscoveredAgent(agent));
-              }
+              if (Array.isArray(list)) list.forEach(agent => registerDiscoveredAgent(agent));
             } catch (err) {}
             return;
           }
@@ -619,16 +973,46 @@
           const msgTime = new Date(payload.time * 1000);
           let title = payload.title || "";
           
-          // Identify agent responses vs user prompts
-          const isUser = !title.includes("[") && !title.includes("Assistant") && !title.includes("System");
+          const isUser = !title.includes("[") && !title.includes("Assistant") && !title.includes("System") && !title.includes("GAIA");
 
+          // Extract Session ID from tags
           let sessionTag = (payload.tags || []).find(t => t.startsWith("sid:"));
           let msgSessionId = sessionTag ? sessionTag.replace("sid:", "") : activeSessionId;
 
-          // Session Fallback: If tag is generic bridge ID, bind it to active session
           if (!msgSessionId || msgSessionId.startsWith("ntfy_") || msgSessionId.endsWith("_default")) {
             msgSessionId = activeSessionId;
           }
+
+          // Resolve Agent ID from tags or title
+          let agentTag = (payload.tags || []).find(t => t.startsWith("agent:"));
+          let msgAgentId = agentTag ? agentTag.replace("agent:", "").toLowerCase() : null;
+
+          if (!msgAgentId && title) {
+            const match = title.match(/@([a-zA-Z0-9_-]+)/) || title.match(/\(([a-zA-Z0-9_-]+)\)/);
+            if (match) msgAgentId = match[1].toLowerCase();
+          }
+
+          // Ensure session object exists
+          let targetSession = sessions.find(s => s.id === msgSessionId);
+          if (!targetSession) {
+            targetSession = {
+              id: msgSessionId,
+              title: isUser ? generateCleanTitle(displayText) : "Conversation",
+              agentId: msgAgentId || getCurrentAgent(),
+              createdAt: msgTime.getTime(),
+              updatedAt: msgTime.getTime()
+            };
+            sessions.unshift(targetSession);
+            saveSessionsToStorage();
+            renderSidebar();
+          } else {
+            targetSession.updatedAt = msgTime.getTime();
+            if (msgAgentId) targetSession.agentId = msgAgentId;
+            saveSessionsToStorage();
+            renderSidebar();
+          }
+
+          if (msgAgentId) registerDiscoveredAgent(msgAgentId);
 
           const localIndex = messages.findIndex(m => 
             m.isFromUser && 
@@ -650,7 +1034,7 @@
               text: displayText,
               attachmentUrl: attachmentUrl,
               isFromUser: isUser,
-              agentId: getCurrentAgent(),
+              agentId: msgAgentId || targetSession.agentId || getCurrentAgent(),
               sessionId: msgSessionId,
               isDelivered: true,
               time: msgTime,
@@ -661,6 +1045,10 @@
             messages.sort((a, b) => a.time - b.time);
             saveMessagesToStorage();
             renderMessages();
+
+            if (!isUser) {
+              triggerAlert(`GAIA Assistant (@${msgObj.agentId})`, displayText || "Received attachment");
+            }
           }
         }
       } catch (e) {
@@ -684,7 +1072,7 @@
 
     async function requestAgentList() {
       try {
-        const commandEnvelope = await createSignedEnvelope("!agents", activeSessionId);
+        const commandEnvelope = await createSignedEnvelope("!agents", activeSessionId, getCurrentAgent());
         let payloadText = commandEnvelope;
 
         if (config.passphrase) {
@@ -693,7 +1081,8 @@
 
         const headers = getAuthHeaders();
         headers["Title"] = "User Command";
-        headers["Tags"] = `sid:${activeSessionId}`;
+        headers["Priority"] = "4";
+        headers["Tags"] = `sid:${activeSessionId},agent:${getCurrentAgent()}`;
 
         const cleanedServer = config.serverUrl.replace(/\/+$/, "");
         await fetch(`${cleanedServer}/${config.topic}`, {
@@ -727,15 +1116,28 @@
       const tempId = "temp-" + Date.now();
       let localImgUrl = stagedDataUrl;
 
-      // Construct signed envelope & encrypt
-      let signedEnvelope = await createSignedEnvelope(formattedPrompt, activeSessionId);
+      // Update Thread Title & Metadata
+      const active = getActiveSession();
+      if (active) {
+        if (active.title === "New Conversation" && text) {
+          active.title = generateCleanTitle(text);
+          updateHeaderMetadata();
+        }
+        active.updatedAt = Date.now();
+        active.agentId = selectedAgent;
+        saveSessionsToStorage();
+        renderSidebar();
+      }
+
+      // Build Canonical Signed Envelope
+      let signedEnvelope = await createSignedEnvelope(formattedPrompt, activeSessionId, selectedAgent);
       let payloadText = signedEnvelope;
 
       if (config.passphrase && signedEnvelope) {
         try {
           payloadText = await encryptText(signedEnvelope);
         } catch (encErr) {
-          alert("⚠️ Encryption Error: Web Crypto is disabled. Please run 'python3 -m http.server' and view via http://localhost:8000");
+          alert("⚠️ Encryption Error: Web Crypto unavailable.");
           return;
         }
       }
@@ -763,7 +1165,9 @@
 
       try {
         const headers = getAuthHeaders();
-        headers["Tags"] = `sid:${activeSessionId}`;
+        // High priority + routing tags for APNs and bridge
+        headers["Priority"] = "4";
+        headers["Tags"] = `sid:${activeSessionId},agent:${selectedAgent}`;
 
         const cleanedServer = config.serverUrl.replace(/\/+$/, "");
 
@@ -773,12 +1177,7 @@
 
           let bodyPayload;
           if (config.passphrase) {
-            try {
-              bodyPayload = await encryptBytes(sendingBytes);
-            } catch (encErr) {
-              alert("⚠️ Encryption Error: Failed to encrypt attachment bytes.");
-              return;
-            }
+            bodyPayload = await encryptBytes(sendingBytes);
           } else {
             bodyPayload = sendingBytes;
           }
@@ -802,7 +1201,7 @@
             }
           }
         } else {
-          headers["Title"] = `User Prompt`;
+          headers["Title"] = `Prompt -> @${selectedAgent}`;
           const response = await fetch(`${cleanedServer}/${config.topic}`, {
             method: "POST",
             body: payloadText,
@@ -964,7 +1363,7 @@
 
       populateAgentDropdown();
       ensureActiveSession();
-      renderSessionDropdown();
+      renderSidebar();
       toggleSettings(false);
       loadMessagesFromStorage();
       restartStream();

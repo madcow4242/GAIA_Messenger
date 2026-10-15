@@ -2,7 +2,7 @@
 # Project: GAIA Messenger
 # File:    backend_adapter.py
 # Author:  Kevin Cazabon (kevin@cazabon.com)
-# Version: 1.0.0 / 10/11/2026
+# Version: 1.1.0 / 10/13/2026
 #
 # Copyright (c) 2026 Kevin Cazabon
 #
@@ -10,12 +10,12 @@
 # https://opensource.org/licenses/MIT
 # ==============================================================================
 
-
+import re
 import uuid
 import json
 import base64
 import logging
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -34,19 +34,26 @@ class BackendAdapter:
         self.system_prompt = config.get("system_prompt", "You are a helpful personal assistant.")
         self.timeout = float(config.get("timeout_seconds", 300))
         
-        # Cache for active GAIA session IDs
-        self._gaia_session_cache: Dict[str, str] = {}
+        # Maps (client_session_id, agent_type) -> gaia_internal_session_id
+        self._gaia_session_cache: Dict[Tuple[str, str], str] = {}
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "ntfy-ai-bridge/1.0",
+            "User-Agent": "ntfy-ai-bridge/1.1",
         }
         if self.backend_type == "gaia":
             headers["X-GAIA-UI"] = "1"
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    def _extract_agent_from_prompt(self, prompt: str) -> Tuple[Optional[str], str]:
+        """Detects and strips leading '@agent_name' tag if present (e.g., '@coder write code' -> ('coder', 'write code'))."""
+        match = re.match(r"^\s*@([a-zA-Z0-9_\-]+)\s*(.*)$", prompt, re.DOTALL)
+        if match:
+            return match.group(1).lower(), match.group(2).strip()
+        return None, prompt
 
     async def query(
         self, 
@@ -57,19 +64,29 @@ class BackendAdapter:
         image_mime: str = "image/jpeg"
     ) -> str:
         """Main entry point. Routes queries to GAIA or standard OpenAI Chat Completions API."""
-        target = agent_or_model or self.target_id
+        # DIAGNOSTIC: Print exact inputs received
+        logger.info(f"[DIAG] query() prompt='{prompt[:40]}' | agent_or_model='{agent_or_model}' | session_id='{session_id}'")
+
+        extracted_agent, cleaned_prompt = self._extract_agent_from_prompt(prompt)
+        
+        # Priority order: explicitly passed agent -> extracted @mention -> default fallback
+        target = (agent_or_model or extracted_agent or self.target_id).strip()
+        
+        # Use cleaned prompt so agents don't see leading '@agent' in their context
+        final_prompt = cleaned_prompt if cleaned_prompt else prompt
+
+        logger.info(f"[{self.backend_type.upper()}] Routing query to target='{target}', session_id='{session_id}'")
 
         if self.backend_type == "gaia":
-            return await self._query_gaia(prompt, target_agent=target, session_id=session_id)
+            return await self._query_gaia(final_prompt, target_agent=target, client_session_id=session_id)
         else:
-            return await self._query_openai(prompt, target_model=target, image_bytes=image_bytes, image_mime=image_mime)
+            return await self._query_openai(final_prompt, target_model=target, image_bytes=image_bytes, image_mime=image_mime)
 
     async def list_available_targets(self) -> List[str]:
         """Queries available agents (GAIA) or downloaded models (OpenAI/Lemonade)."""
         if self.backend_type == "gaia":
             url = f"{self.api_url}/api/agents"
         else:
-            # Handles base URLs ending with or without /v1
             endpoint = "/models" if self.api_url.endswith(("/v1", "/api/v1")) else "/v1/models"
             url = f"{self.api_url}{endpoint}"
 
@@ -79,11 +96,9 @@ class BackendAdapter:
                 if resp.status_code == 200:
                     data = resp.json()
                     
-                    # Extract list from OpenAI structure {"data": [{"id": "model_1"}, ...]}
                     if "data" in data and isinstance(data["data"], list):
                         return [item["id"] for item in data["data"] if "id" in item]
                     
-                    # Extract list from GAIA structure {"agents": [...]}
                     raw_agents = data.get("agents", data) if isinstance(data, dict) else data
                     if isinstance(raw_agents, list):
                         return [str(item.get("id", item)) if isinstance(item, dict) else str(item) for item in raw_agents]
@@ -96,16 +111,18 @@ class BackendAdapter:
     # -------------------------------------------------------------------------
     # GAIA API Implementation
     # -------------------------------------------------------------------------
-    async def _query_gaia(self, prompt: str, target_agent: str, session_id: Optional[str]) -> str:
-        """Dispatches query to GAIA's POST /api/chat/send with automatic session recovery."""
+    async def _query_gaia(self, prompt: str, target_agent: str, client_session_id: Optional[str]) -> str:
+        """Dispatches query to GAIA's POST /api/chat/send with session mapping and error recovery."""
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            active_session_id = session_id or await self._get_or_create_gaia_session(target_agent, client)
-            url = f"{self.api_url}/api/chat/send"
+            client_sid = client_session_id or f"default_{target_agent}"
+            active_gaia_sid = await self._resolve_gaia_session(client_sid, target_agent, client)
 
+            url = f"{self.api_url}/api/chat/send"
             payload = {
-                "session_id": active_session_id,
+                "session_id": active_gaia_sid,
                 "message": prompt,
                 "agent_type": target_agent,
+                "agent_id": target_agent,
                 "stream": False
             }
 
@@ -113,10 +130,10 @@ class BackendAdapter:
 
             # Handle session expiration or invalid session ID gracefully
             if resp.status_code in (404, 422) and "session" in resp.text.lower():
-                logger.warning(f"Session '{active_session_id[:8]}' rejected by GAIA ({resp.status_code}). Refreshing session...")
-                self._gaia_session_cache.pop(target_agent, None)
-                active_session_id = await self._get_or_create_gaia_session(target_agent, client)
-                payload["session_id"] = active_session_id
+                logger.warning(f"Session '{active_gaia_sid[:8]}' rejected by GAIA ({resp.status_code}). Refreshing session...")
+                self._gaia_session_cache.pop((client_sid, target_agent), None)
+                active_gaia_sid = await self._create_gaia_session(target_agent, client_sid, client)
+                payload["session_id"] = active_gaia_sid
                 resp = await client.post(url, json=payload, headers=self._get_headers())
 
             resp.raise_for_status()
@@ -126,38 +143,42 @@ class BackendAdapter:
                 return self._extract_text_from_json(resp.json())
             return resp.text
 
-    async def _get_or_create_gaia_session(self, agent_type: str, client: httpx.AsyncClient) -> str:
-        """Creates a registered session on GAIA via POST /api/sessions."""
-        if agent_type in self._gaia_session_cache:
-            return self._gaia_session_cache[agent_type]
+    async def _resolve_gaia_session(self, client_sid: str, agent_type: str, client: httpx.AsyncClient) -> str:
+        """Resolves or maps a client session to a valid GAIA server session ID."""
+        cache_key = (client_sid, agent_type)
+        if cache_key in self._gaia_session_cache:
+            return self._gaia_session_cache[cache_key]
 
+        return await self._create_gaia_session(agent_type, client_sid, client)
+
+    async def _create_gaia_session(self, agent_type: str, client_sid: str, client: httpx.AsyncClient) -> str:
+        """Creates a registered session on GAIA via POST /api/sessions."""
         url = f"{self.api_url}/api/sessions"
         headers = self._get_headers()
 
         payload = {
             "agent_type": agent_type,
-            "title": f"ntfy Session [{agent_type}]"
+            "title": f"ntfy Session [{agent_type}] ({client_sid[:12]})"
         }
 
         try:
-            logger.info(f"Creating new session on GAIA for agent_type='{agent_type}'...")
+            logger.info(f"Creating new session on GAIA for agent_type='{agent_type}', client_sid='{client_sid}'...")
             resp = await client.post(url, json=payload, headers=headers, timeout=15.0)
             
             if resp.status_code in (200, 201):
                 data = resp.json()
-                # SessionResponse contains 'id'
                 sid = data.get("id") or data.get("session_id")
                 if sid:
                     logger.info(f"Successfully initialized GAIA session '{sid}' for agent '{agent_type}'.")
-                    self._gaia_session_cache[agent_type] = sid
+                    self._gaia_session_cache[(client_sid, agent_type)] = sid
                     return sid
             
             logger.error(f"GAIA /api/sessions error HTTP {resp.status_code}: {resp.text}")
         except Exception as err:
             logger.error(f"Failed connecting to GAIA /api/sessions: {err}")
 
-        raise RuntimeError(f"Could not create active session on GAIA for agent_type '{agent_type}'.")
-
+        # Fallback to passing the client_sid directly if /api/sessions is unavailable
+        return client_sid
 
     # -------------------------------------------------------------------------
     # Standard OpenAI / Lemonade API Implementation
@@ -172,7 +193,6 @@ class BackendAdapter:
         endpoint = "/chat/completions" if self.api_url.endswith(("/v1", "/api/v1")) else "/v1/chat/completions"
         url = f"{self.api_url}{endpoint}"
 
-        # Construct message content (supporting text + optional vision payload)
         if image_bytes:
             b64_img = base64.b64encode(image_bytes).decode("utf-8")
             user_content: Union[str, List[Dict[str, Any]]] = [

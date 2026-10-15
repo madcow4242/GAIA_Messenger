@@ -2,7 +2,7 @@
 // Project: GAIA Messenger iPhone app
 // File:    ContentView.swift
 // Author:  Kevin Cazabon (kevin@cazabon.com)
-// Version: 1.0.0 / 10/11/2026
+// Version: 1.1.0 / 10/13/2026
 //
 // Copyright (c) 2026 Kevin Cazabon
 //
@@ -29,8 +29,6 @@ class E2EECrypto {
         guard !trimmed.isEmpty, let passData = trimmed.data(using: .utf8) else { return nil }
         
         self.passphraseData = passData
-        // We still derive a base key using static salt for legacy decryption, 
-        // but encryption will use a dynamic salt.
         guard let derivedKey = Self.deriveKey(passphraseData: passData, salt: Self.staticSalt) else { return nil }
         self.key = derivedKey
     }
@@ -67,22 +65,18 @@ class E2EECrypto {
     }
     
     func encryptData(_ rawData: Data) -> Data? {
-        // 1. Generate 16-byte random salt
         var salt = Data(count: 16)
         let result = salt.withUnsafeMutableBytes {
             SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!)
         }
         guard result == errSecSuccess else { return nil }
         
-        // 2. Derive dynamic key for this specific payload
         guard let dynamicKey = Self.deriveKey(passphraseData: passphraseData, salt: salt) else { return nil }
         
         do {
-            // 3. Encrypt (AES.GCM automatically generates a random 12-byte IV)
             let sealedBox = try AES.GCM.seal(rawData, using: dynamicKey)
-            guard let combinedBox = sealedBox.combined else { return nil } // combinedBox is IV(12) + Cipher + Tag(16)
+            guard let combinedBox = sealedBox.combined else { return nil }
             
-            // 4. Prepend 16-byte salt to match Python's expected `salt[16] + iv[12] + ciphertext`
             var finalData = Data()
             finalData.append(salt)
             finalData.append(combinedBox)
@@ -100,8 +94,6 @@ class E2EECrypto {
     }
     
     func decryptData(_ rawData: Data) -> Data? {
-        // Strategy 1: Dynamic 28-byte header check (16-byte Salt + 12-byte IV + Ciphertext)
-        // Minimum viable length is 44 bytes (16 salt + 12 iv + 16 tag + >0 cipher)
         if rawData.count >= 44 {
             let dynamicSalt = rawData.subdata(in: 0..<16)
             let combinedData = rawData.subdata(in: 16..<rawData.count)
@@ -114,7 +106,6 @@ class E2EECrypto {
             }
         }
         
-        // Strategy 2: Legacy static 12-byte header
         do {
             let sealedBox = try AES.GCM.SealedBox(combined: rawData)
             return try AES.GCM.open(sealedBox, using: key)
@@ -199,9 +190,12 @@ class NtfyChatViewModel: ObservableObject {
     @AppStorage("ntfy_passphrase") var encryptionPassphrase: String = ""
     @AppStorage("ntfy_authorization") var authorizationToken: String = ""
     @AppStorage("ntfy_retention_days") var retentionDays: Int = 7
-    @AppStorage("ntfy_target_agent") var targetAgent: String = "kevins-pa"
+    @AppStorage("ntfy_target_agent") var targetAgent: String = "kevins-pa" {
+        didSet {
+            handleAgentSelectionChanged()
+        }
+    }
     
-    // NEW BRIDGE CONFIGS
     @AppStorage("ntfy_target_id") var bridgeTargetId: String = "node-kevin-pa"
     @AppStorage("ntfy_sender_id") var bridgeSenderId: String = "user-kevin"
     @AppStorage("ntfy_hmac_secret") var hmacSecret: String = ""
@@ -221,9 +215,15 @@ class NtfyChatViewModel: ObservableObject {
         loadSessions()
         loadMessagesFromDisk()
         restartListener()
-        requestAgentList()
         
-        // Ask for local notification permissions to enable badge counts
+        // Ensure UI stays in sync with current session metadata on startup
+        if let active = sessions.first(where: { $0.id == currentSessionId }) {
+            targetAgent = active.agentId
+        } else if let first = sessions.first {
+            currentSessionId = first.id
+            targetAgent = first.agentId
+        }
+        
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     
@@ -240,12 +240,7 @@ class NtfyChatViewModel: ObservableObject {
     }
     
     func createAuthenticatedRequest(url: URL, timeout: TimeInterval = 30) -> URLRequest {
-        var request = URLRequest(
-            url: url, 
-            cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, 
-            timeoutInterval: timeout
-        )
-        
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
         let cleanToken = self.authorizationToken.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanToken.isEmpty {
             if cleanToken.lowercased().hasPrefix("bearer ") || cleanToken.lowercased().hasPrefix("basic ") {
@@ -274,7 +269,7 @@ class NtfyChatViewModel: ObservableObject {
     }
     
     func registerDiscoveredAgent(_ agentId: String) {
-        let clean = agentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clean = agentId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty, !availableAgents.contains(clean) else { return }
         availableAgents.append(clean)
         saveAgents()
@@ -284,12 +279,26 @@ class NtfyChatViewModel: ObservableObject {
         sendMessage(customText: "!agents", isSystemCommand: true)
     }
     
+    func handleAgentSelectionChanged() {
+        // If the user selects a new agent from the dropdown, switch to or create a session for it
+        let cleanAgent = targetAgent.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if let active = sessions.first(where: { $0.id == currentSessionId }), active.agentId.lowercased() == cleanAgent {
+            return
+        }
+        
+        if let existingSession = sessions.first(where: { $0.agentId.lowercased() == cleanAgent }) {
+            currentSessionId = existingSession.id
+        } else {
+            createNewSession()
+        }
+    }
+    
     func loadSessions() {
         if let decoded = try? JSONDecoder().decode([ChatSession].self, from: persistedSessionsData), !decoded.isEmpty {
             self.sessions = decoded
             self.currentSessionId = decoded.first?.id ?? "default-session"
         } else {
-            let defaultSession = ChatSession(id: "default-session", title: "Main Chat", createdAt: Date(), agentId: targetAgent)
+            let defaultSession = ChatSession(id: "default-session", title: "New Conversation", createdAt: Date(), agentId: targetAgent)
             self.sessions = [defaultSession]
             self.currentSessionId = defaultSession.id
             saveSessions()
@@ -303,12 +312,13 @@ class NtfyChatViewModel: ObservableObject {
     }
     
     func createNewSession() {
-        let newId = "session-\(UUID().uuidString.prefix(8))"
+        let agent = targetAgent.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let newId = "sess_\(agent)_\(Int(Date().timeIntervalSince1970))"
         let newSession = ChatSession(
             id: newId,
-            title: "Chat \(DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short))",
+            title: "New Conversation",
             createdAt: Date(),
-            agentId: targetAgent
+            agentId: agent
         )
         sessions.insert(newSession, at: 0)
         currentSessionId = newId
@@ -321,6 +331,9 @@ class NtfyChatViewModel: ObservableObject {
         messages.removeAll { $0.sessionId == session.id }
         if currentSessionId == session.id {
             currentSessionId = sessions.first?.id ?? "default-session"
+            if let nextSession = sessions.first {
+                targetAgent = nextSession.agentId
+            }
         }
         saveSessions()
         saveMessagesToDisk()
@@ -348,8 +361,6 @@ class NtfyChatViewModel: ObservableObject {
         content.title = title
         content.body = body
         content.sound = .default
-        
-        // BADGE FIX: Increment app icon badge count natively
         content.badge = 1
         
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
@@ -358,13 +369,16 @@ class NtfyChatViewModel: ObservableObject {
     }
     
     // MARK: - Crypto Envelopes
-    func createSignedEnvelope(promptText: String, sessionId: String) -> String {
+    func createSignedEnvelope(promptText: String, sessionId: String, agentId: String) -> String {
         let nonceBytes = (0..<8).map { _ in UInt8.random(in: 0...255) }
         let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
         let ts = Int(Date().timeIntervalSince1970)
 
-        // Ensure JSON matches Python's deterministic formatting
-        let payloadJson = "{\"session_id\":\"\(sessionId)\",\"text\":\"\(promptText)\"}"
+        // Generate JSON with properly escaped quotes and alphabetical order
+        // Python expected order: "agent_id", "agent_type", "session_id", "text"
+        let escapedPrompt = promptText.replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
+        let payloadJson = "{\"agent_id\":\"\(agentId)\",\"agent_type\":\"\(agentId)\",\"session_id\":\"\(sessionId)\",\"text\":\"\(escapedPrompt)\"}"
+        
         let sigBase = "\(nonce)|\(ts)|\(payloadJson)"
 
         var signatureHex = ""
@@ -381,6 +395,8 @@ class NtfyChatViewModel: ObservableObject {
             "nonce": nonce,
             "ts": ts,
             "payload": [
+                "agent_id": agentId,
+                "agent_type": agentId,
                 "session_id": sessionId,
                 "text": promptText
             ],
@@ -391,7 +407,7 @@ class NtfyChatViewModel: ObservableObject {
            let jsonString = String(data: jsonData, encoding: .utf8) {
             return jsonString
         }
-        return promptText // Fallback
+        return promptText
     }
     
     func restartListener() {
@@ -439,22 +455,16 @@ class NtfyChatViewModel: ObservableObject {
             return rawString
         }
         
-        // 1. Try to unpack a Bridge Envelope if one was sent back
         if let data = trimmed.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            
-            // Is it a bridge envelope?
             if let payload = json["payload"] as? [String: Any], let envText = payload["text"] as? String {
                 return envText.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            
-            // Standard JSON extraction
             if let res = json["result"] as? String { return res.trimmingCharacters(in: .whitespacesAndNewlines) }
             if let res = json["response"] as? String { return res.trimmingCharacters(in: .whitespacesAndNewlines) }
             if let out = json["output"] as? String { return out.trimmingCharacters(in: .whitespacesAndNewlines) }
             if let contentStr = json["content"] as? String { return contentStr.trimmingCharacters(in: .whitespacesAndNewlines) }
         }
-        
         return rawString
     }
 
@@ -479,7 +489,6 @@ class NtfyChatViewModel: ObservableObject {
                 guard statusCode == 200 else {
                     let currentDelay = retryDelay
                     retryDelay = min(retryDelay * 2, maxDelay)
-                    
                     for second in stride(from: currentDelay, through: 1, by: -1) {
                         if Task.isCancelled { break }
                         await MainActor.run { self.connectionError = "HTTP \(statusCode) Error. Retrying in \(second)s..." }
@@ -502,30 +511,24 @@ class NtfyChatViewModel: ObservableObject {
                         var rawText = payload.message ?? ""
                         var fetchedAttachmentUrl: String? = nil
                         
-                        if let attachment = payload.attachment, let url = URL(string: attachment.url) {
+                        if let attachment = payload.attachment, let attachUrl = URL(string: attachment.url) {
                             let attachName = attachment.name.lowercased()
                             let attachType = (attachment.type ?? "").lowercased()
                             
-                            let isTextAttachment = attachName.hasSuffix(".txt") ||
-                                                   attachName == "attachment" ||
-                                                   attachType.hasPrefix("text/")
+                            let isTextAttachment = attachName.hasSuffix(".txt") || attachName == "attachment" || attachType.hasPrefix("text/")
                                                    
                             if isTextAttachment {
                                 var fetchedData: Data? = nil
-                                
-                                if let (data, resp) = try? await session.data(from: url),
-                                   (resp as? HTTPURLResponse)?.statusCode == 200 {
+                                if let (data, resp) = try? await session.data(from: attachUrl), (resp as? HTTPURLResponse)?.statusCode == 200 {
                                     fetchedData = data
                                 } else {
-                                    let req = self.createAuthenticatedRequest(url: url)
-                                    if let (data, resp) = try? await session.data(for: req),
-                                       (resp as? HTTPURLResponse)?.statusCode == 200 {
+                                    let req = self.createAuthenticatedRequest(url: attachUrl)
+                                    if let (data, resp) = try? await session.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200 {
                                         fetchedData = data
                                     }
                                 }
-                                
-                                if let data = fetchedData, let fetchedString = String(data: data, encoding: .utf8) {
-                                    let trimmed = fetchedString.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let d = fetchedData, let str = String(data: d, encoding: .utf8) {
+                                    let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
                                     if !trimmed.isEmpty {
                                         rawText = trimmed
                                         fetchedAttachmentUrl = nil
@@ -536,7 +539,6 @@ class NtfyChatViewModel: ObservableObject {
                             }
                         }
                         
-                        // 1. Unified Decryption Handling
                         var displayText: String
                         if let crypto = self.cryptoHelper {
                             let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -554,90 +556,72 @@ class NtfyChatViewModel: ObservableObject {
                             }
                         } else {
                             displayText = rawText
-                            if displayText.isEmpty && fetchedAttachmentUrl == nil {
-                                continue
-                            }
+                            if displayText.isEmpty && fetchedAttachmentUrl == nil { continue }
                         }
                         
-                        // 2. Extract payload & resolve Session ID
                         displayText = extractTextFromDecryptedPayload(displayText)
-                        
-                        if displayText.hasPrefix("You received a file:") {
-                            displayText = "⚠️ Unable to load attachment content."
-                        }
+                        if displayText.hasPrefix("You received a file:") { displayText = "⚠️ Unable to load attachment content." }
                         
                         if displayText.hasPrefix("[AGENTS_LIST]:") {
                             let jsonPart = displayText.replacingOccurrences(of: "[AGENTS_LIST]:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                            if let jsonData = jsonPart.data(using: .utf8),
-                               let list = try? JSONDecoder().decode([String].self, from: jsonData) {
+                            if let jsonData = jsonPart.data(using: .utf8), let list = try? JSONDecoder().decode([String].self, from: jsonData) {
                                 await MainActor.run {
-                                    for agent in list {
-                                        self.registerDiscoveredAgent(agent)
-                                    }
+                                    for agent in list { self.registerDiscoveredAgent(agent) }
                                 }
                             }
                             continue
                         }
 
-                        if displayText.hasPrefix("[SYSTEM_COMMAND:") || displayText.hasPrefix("[SYSTEM:") {
-                            continue
-                        }
+                        if displayText.hasPrefix("[SYSTEM_COMMAND:") || displayText.hasPrefix("[SYSTEM:") { continue }
                         
-                        // Fix 3: Resolve Generic Session ID fallback (like HTML version)
+                        // Extract Session and Agent from tags
                         var msgSessionId = self.currentSessionId
-                        if let tags = payload.tags, let sidTag = tags.first(where: { $0.hasPrefix("sid:") }) {
-                            let extracted = String(sidTag.dropFirst(4))
-                            if !extracted.hasPrefix("ntfy_") && !extracted.hasSuffix("_default") {
-                                msgSessionId = extracted
+                        var msgAgentId: String? = nil
+                        
+                        if let tags = payload.tags {
+                            for tag in tags {
+                                if tag.hasPrefix("sid:") {
+                                    let extracted = String(tag.dropFirst(4))
+                                    if !extracted.hasPrefix("ntfy_") && !extracted.hasSuffix("_default") {
+                                        msgSessionId = extracted
+                                    }
+                                } else if tag.hasPrefix("agent:") {
+                                    msgAgentId = String(tag.dropFirst(6))
+                                }
                             }
                         }
                         
                         let msgTime = Date(timeIntervalSince1970: TimeInterval(payload.time))
                         let title = payload.title ?? ""
-                        let isUser = !title.contains("[") && !title.contains("Assistant") && !title.contains("System")
+                        let isUser = !title.contains("[") && !title.contains("Assistant") && !title.contains("System") && !title.contains("GAIA")
                         
                         await MainActor.run {
+                            // Map session ID to thread, or create it if missing
+                            if let idx = self.sessions.firstIndex(where: { $0.id == msgSessionId }) {
+                                self.sessions[idx].agentId = msgAgentId ?? self.sessions[idx].agentId
+                                self.saveSessions()
+                            } else {
+                                let titleStr = isUser ? String(displayText.prefix(28)) + (displayText.count > 28 ? "…" : "") : "Conversation"
+                                let s = ChatSession(id: msgSessionId, title: titleStr, createdAt: msgTime, agentId: msgAgentId ?? self.targetAgent)
+                                self.sessions.insert(s, at: 0)
+                                self.saveSessions()
+                            }
+                            
                             if let localIndex = self.messages.firstIndex(where: {
-                                $0.isFromUser &&
-                                ($0.id == payload.id ||
-                                ($0.id.hasPrefix("temp-") &&
-                                ($0.text.trimmingCharacters(in: .whitespacesAndNewlines) == displayText.trimmingCharacters(in: .whitespacesAndNewlines) ||
-                                ($0.localImageData != nil && fetchedAttachmentUrl != nil))))
+                                $0.isFromUser && ($0.id == payload.id || ($0.id.hasPrefix("temp-") && ($0.text.trimmingCharacters(in: .whitespacesAndNewlines) == displayText.trimmingCharacters(in: .whitespacesAndNewlines) || ($0.localImageData != nil && fetchedAttachmentUrl != nil))))
                             }) {
                                 var updated = self.messages[localIndex]
-                                updated = ChatMessage(
-                                    id: payload.id,
-                                    sessionId: msgSessionId,
-                                    text: displayText.isEmpty ? updated.text : displayText,
-                                    isFromUser: true,
-                                    timestamp: msgTime,
-                                    actions: payload.actions,
-                                    attachmentUrl: fetchedAttachmentUrl ?? updated.attachmentUrl,
-                                    localImageData: updated.localImageData,
-                                    isDelivered: true
-                                )
+                                updated = ChatMessage(id: payload.id, sessionId: msgSessionId, text: displayText.isEmpty ? updated.text : displayText, isFromUser: true, timestamp: msgTime, actions: payload.actions, attachmentUrl: fetchedAttachmentUrl ?? updated.attachmentUrl, localImageData: updated.localImageData, isDelivered: true)
                                 self.messages[localIndex] = updated
                                 self.saveMessagesToDisk()
                             } else if !self.messages.contains(where: { $0.id == payload.id }) {
-                                let msg = ChatMessage(
-                                    id: payload.id,
-                                    sessionId: msgSessionId,
-                                    text: displayText,
-                                    isFromUser: isUser,
-                                    timestamp: msgTime,
-                                    actions: payload.actions,
-                                    attachmentUrl: fetchedAttachmentUrl,
-                                    isDelivered: true
-                                )
+                                let msg = ChatMessage(id: payload.id, sessionId: msgSessionId, text: displayText, isFromUser: isUser, timestamp: msgTime, actions: payload.actions, attachmentUrl: fetchedAttachmentUrl, isDelivered: true)
                                 self.messages.append(msg)
                                 self.messages.sort { $0.timestamp < $1.timestamp }
                                 self.saveMessagesToDisk()
                                 
-                                if msgTime >= startTime.addingTimeInterval(-5) {
-                                    self.scheduleLocalNotification(
-                                        title: "Assistant",
-                                        body: displayText.isEmpty ? "Sent an attachment" : displayText
-                                    )
+                                if msgTime >= startTime.addingTimeInterval(-5) && !isUser {
+                                    self.scheduleLocalNotification(title: "Assistant", body: displayText.isEmpty ? "Sent an attachment" : displayText)
                                 }
                             }
                         }
@@ -647,7 +631,6 @@ class NtfyChatViewModel: ObservableObject {
                 if !Task.isCancelled {
                     let currentDelay = retryDelay
                     retryDelay = min(retryDelay * 2, maxDelay)
-                    
                     for second in stride(from: currentDelay, through: 1, by: -1) {
                         if Task.isCancelled { break }
                         await MainActor.run { self.connectionError = "Connection error. Retrying in \(second)s..." }
@@ -669,38 +652,31 @@ class NtfyChatViewModel: ObservableObject {
             return
         }
         
-        if !isSystemCommand && !textToSend.isEmpty && !textToSend.hasPrefix("@") {
-            let cleanAgent = targetAgent.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleanAgent.isEmpty {
-                textToSend = "@\(cleanAgent) \(textToSend)"
-            }
+        let cleanAgent = targetAgent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !isSystemCommand && !textToSend.isEmpty && !textToSend.hasPrefix("@") && !cleanAgent.isEmpty {
+            textToSend = "@\(cleanAgent) \(textToSend)"
         }
         
         isSending = true
         let tempId = "temp-\(UUID().uuidString)"
         
+        // Auto-update thread title on first message
         if !isSystemCommand {
-            let localMessage = ChatMessage(
-                id: tempId,
-                sessionId: currentSessionId,
-                text: textToSend,
-                isFromUser: true,
-                timestamp: Date(),
-                actions: nil,
-                attachmentUrl: nil,
-                localImageData: attachmentData,
-                isDelivered: false
-            )
+            if let activeIdx = sessions.firstIndex(where: { $0.id == currentSessionId }) {
+                if sessions[activeIdx].title == "New Conversation" && !textToSend.isEmpty {
+                    let rawContent = textToSend.replacingOccurrences(of: "@\(cleanAgent) ", with: "")
+                    sessions[activeIdx].title = String(rawContent.prefix(28)) + (rawContent.count > 28 ? "…" : "")
+                    saveSessions()
+                }
+            }
+            
+            let localMessage = ChatMessage(id: tempId, sessionId: currentSessionId, text: textToSend, isFromUser: true, timestamp: Date(), actions: nil, attachmentUrl: nil, localImageData: attachmentData, isDelivered: false)
             self.messages.append(localMessage)
             saveMessagesToDisk()
         }
         
         Task {
-            defer {
-                Task { @MainActor in
-                    self.isSending = false
-                }
-            }
+            defer { Task { @MainActor in self.isSending = false } }
             
             let cleanedServer = serverUrl.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
             guard let url = URL(string: "\(cleanedServer)/\(cleanTopic)") else {
@@ -710,12 +686,11 @@ class NtfyChatViewModel: ObservableObject {
             
             var request = createAuthenticatedRequest(url: url, timeout: 20.0)
             
-            // 1. Pack Envelope
-            let signedEnvelopeString = createSignedEnvelope(promptText: textToSend, sessionId: currentSessionId)
+            // Pack Canonical Envelope
+            let signedEnvelopeString = createSignedEnvelope(promptText: textToSend, sessionId: currentSessionId, agentId: cleanAgent.isEmpty ? "kevins-pa" : cleanAgent)
             
-            // 2. Encrypt Layer
             let payloadText: String
-            if !textToSend.isEmpty, let crypto = self.cryptoHelper, let encrypted = crypto.encrypt(plaintext: signedEnvelopeString) {
+            if let crypto = self.cryptoHelper, let encrypted = crypto.encrypt(plaintext: signedEnvelopeString) {
                 payloadText = encrypted
             } else {
                 payloadText = signedEnvelopeString
@@ -725,11 +700,11 @@ class NtfyChatViewModel: ObservableObject {
                 let uploadName = fileName ?? "enc_photo.bin"
                 request.httpMethod = "PUT"
                 request.setValue(uploadName.hasPrefix("enc_") ? uploadName : "enc_\(uploadName)", forHTTPHeaderField: "Filename")
-                request.setValue("sid:\(currentSessionId)", forHTTPHeaderField: "Tags")
+                request.setValue("sid:\(currentSessionId),agent:\(cleanAgent)", forHTTPHeaderField: "Tags")
+                request.setValue("4", forHTTPHeaderField: "Priority")
                 
                 if !payloadText.isEmpty {
-                    let sanitizedCaption = payloadText.components(separatedBy: .newlines).joined(separator: " ")
-                    request.setValue(sanitizedCaption, forHTTPHeaderField: "Message")
+                    request.setValue(payloadText.components(separatedBy: .newlines).joined(separator: " "), forHTTPHeaderField: "Message")
                 }
                 
                 if let crypto = self.cryptoHelper, let encryptedBlob = crypto.encryptData(data) {
@@ -740,7 +715,8 @@ class NtfyChatViewModel: ObservableObject {
             } else {
                 request.httpMethod = "POST"
                 request.setValue("User Prompt", forHTTPHeaderField: "Title")
-                request.setValue("sid:\(currentSessionId)", forHTTPHeaderField: "Tags")
+                request.setValue("sid:\(currentSessionId),agent:\(cleanAgent)", forHTTPHeaderField: "Tags")
+                request.setValue("4", forHTTPHeaderField: "Priority")
                 request.httpBody = payloadText.data(using: .utf8)
             }
             
@@ -753,17 +729,7 @@ class NtfyChatViewModel: ObservableObject {
                         await MainActor.run {
                             if let idx = self.messages.firstIndex(where: { $0.id == tempId }) {
                                 var msg = self.messages[idx]
-                                msg = ChatMessage(
-                                    id: resJson.id,
-                                    sessionId: msg.sessionId,
-                                    text: msg.text,
-                                    isFromUser: true,
-                                    timestamp: msg.timestamp,
-                                    actions: msg.actions,
-                                    attachmentUrl: msg.attachmentUrl,
-                                    localImageData: msg.localImageData,
-                                    isDelivered: true
-                                )
+                                msg = ChatMessage(id: resJson.id, sessionId: msg.sessionId, text: msg.text, isFromUser: true, timestamp: msg.timestamp, actions: msg.actions, attachmentUrl: msg.attachmentUrl, localImageData: msg.localImageData, isDelivered: true)
                                 self.messages[idx] = msg
                                 self.saveMessagesToDisk()
                             }
@@ -786,14 +752,11 @@ struct ContentView: View {
     @StateObject private var viewModel = NtfyChatViewModel()
     @State private var showSettings = false
     @State private var showHistorySheet = false
-    
-    // BADGE FIX: Clear the red dot when app opens
     @Environment(\.scenePhase) var scenePhase
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Connection Error Banner
                 if let errorMsg = viewModel.connectionError {
                     HStack(spacing: 6) {
                         Image(systemName: "wifi.slash")
@@ -802,9 +765,7 @@ struct ContentView: View {
                             .font(.caption)
                             .fontWeight(.medium)
                         Spacer()
-                        Button(action: {
-                            viewModel.restartListener()
-                        }) {
+                        Button(action: { viewModel.restartListener() }) {
                             Text("Retry")
                                 .font(.caption2)
                                 .fontWeight(.bold)
@@ -822,7 +783,6 @@ struct ContentView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 
-                // Agent Selector & Chat Session Bar
                 HStack(spacing: 10) {
                     HStack(spacing: 4) {
                         Image(systemName: "cpu")
@@ -887,18 +847,15 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showSettings, onDismiss: {
-                viewModel.restartListener()
-            }) {
+            .sheet(isPresented: $showSettings, onDismiss: { viewModel.restartListener() }) {
                 SettingsView(viewModel: viewModel)
             }
             .sheet(isPresented: $showHistorySheet) {
                 SessionHistoryView(viewModel: viewModel)
             }
         }
-        .onChange(of: scenePhase) { newPhase in
+        .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
-                // Clear the badge count on home screen
                 UNUserNotificationCenter.current().setBadgeCount(0)
             }
         }
@@ -910,16 +867,12 @@ struct ChatAreaView: View {
     @ObservedObject var viewModel: NtfyChatViewModel
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var stagedImageData: Data? = nil
-    
-    // Explicit local state to enforce UI clearing
     @State private var inputBuffer: String = ""
 
     private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool = true) {
         guard let lastId = viewModel.currentSessionMessages.last?.id else { return }
         if animated {
-            withAnimation(.easeOut(duration: 0.25)) {
-                proxy.scrollTo(lastId, anchor: .bottom)
-            }
+            withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(lastId, anchor: .bottom) }
         } else {
             proxy.scrollTo(lastId, anchor: .bottom)
         }
@@ -931,125 +884,63 @@ struct ChatAreaView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(viewModel.currentSessionMessages) { msg in
-                            ChatBubble(
-                                message: msg,
-                                passphrase: viewModel.encryptionPassphrase,
-                                authToken: viewModel.authorizationToken,
-                                onActionTap: { bodyPayload in
-                                    viewModel.sendMessage(customText: bodyPayload)
-                                }
-                            )
+                            ChatBubble(message: msg, passphrase: viewModel.encryptionPassphrase, authToken: viewModel.authorizationToken, onActionTap: { bodyPayload in
+                                viewModel.sendMessage(customText: bodyPayload)
+                            })
                             .id(msg.id)
                         }
                     }
                     .padding()
                 }
-                .onAppear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        scrollToBottom(proxy: proxy, animated: false)
-                    }
-                }
-                .onChange(of: viewModel.currentSessionId) { _, _ in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        scrollToBottom(proxy: proxy, animated: false)
-                    }
-                }
-                .onChange(of: viewModel.currentSessionMessages.last?.id) { _, _ in
-                    scrollToBottom(proxy: proxy, animated: true)
-                }
+                .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { scrollToBottom(proxy: proxy, animated: false) } }
+                .onChange(of: viewModel.currentSessionId) { _, _ in DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { scrollToBottom(proxy: proxy, animated: false) } }
+                .onChange(of: viewModel.currentSessionMessages.last?.id) { _, _ in scrollToBottom(proxy: proxy, animated: true) }
             }
             
             Divider()
             
-            // Staged Image Preview Bar
             if let data = stagedImageData, let uiImage = UIImage(data: data) {
                 HStack(alignment: .center, spacing: 10) {
                     ZStack(alignment: .topTrailing) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 56, height: 56)
-                            .cornerRadius(10)
-                            .clipped()
-                        
-                        Button(action: {
-                            stagedImageData = nil
-                            selectedPhotoItem = nil
-                        }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundColor(.white)
-                                .background(Circle().fill(Color.black.opacity(0.6)))
-                        }
-                        .offset(x: 6, y: -6)
+                        Image(uiImage: uiImage).resizable().aspectRatio(contentMode: .fill).frame(width: 56, height: 56).cornerRadius(10).clipped()
+                        Button(action: { stagedImageData = nil; selectedPhotoItem = nil }) {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 18)).foregroundColor(.white).background(Circle().fill(Color.black.opacity(0.6)))
+                        }.offset(x: 6, y: -6)
                     }
                     .padding(.top, 6)
-                    
-                    Text("Photo attached")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
+                    Text("Photo attached").font(.caption).foregroundColor(.secondary)
                     Spacer()
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 4)
-                .background(Color(.systemBackground))
+                .padding(.horizontal).padding(.bottom, 4).background(Color(.systemBackground))
             }
             
-            // Input Controls
             HStack(spacing: 8) {
                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                    Image(systemName: stagedImageData != nil ? "paperclip.circle.fill" : "paperclip")
-                        .font(.system(size: 20))
-                        .foregroundColor(stagedImageData != nil ? .blue : .gray)
+                    Image(systemName: stagedImageData != nil ? "paperclip.circle.fill" : "paperclip").font(.system(size: 20)).foregroundColor(stagedImageData != nil ? .blue : .gray)
                 }
                 .onChange(of: selectedPhotoItem) { _, newItem in
-                    Task {
-                        if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                            await MainActor.run {
-                                self.stagedImageData = data
-                            }
-                        }
-                    }
+                    Task { if let data = try? await newItem?.loadTransferable(type: Data.self) { await MainActor.run { self.stagedImageData = data } } }
                 }
                 
-                // BUG FIX: using local intermediate state `inputBuffer`
                 TextField("Message @\(viewModel.targetAgent)...", text: $inputBuffer)
-                    .padding(10)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(20)
+                    .padding(10).background(Color(.systemGray6)).cornerRadius(20)
                 
                 Button(action: {
                     let imageToSend = stagedImageData
                     let capturedText = inputBuffer
-                    
-                    // Immediately clear local view buffers
                     inputBuffer = ""
                     stagedImageData = nil
                     selectedPhotoItem = nil
-                    
-                    // Dispatch to ViewModel asynchronously
                     Task { @MainActor in
                         viewModel.messageText = capturedText
                         viewModel.sendMessage(customText: capturedText, attachmentData: imageToSend, fileName: "enc_photo.bin")
                     }
                 }) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .resizable()
-                        .frame(width: 32, height: 32)
-                        .foregroundColor(
-                            (inputBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && stagedImageData == nil) 
-                                ? .gray 
-                                : .blue
-                        )
+                    Image(systemName: "arrow.up.circle.fill").resizable().frame(width: 32, height: 32).foregroundColor((inputBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && stagedImageData == nil) ? .gray : .blue)
                 }
-                .disabled(
-                    (inputBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && stagedImageData == nil) || viewModel.isSending
-                )
+                .disabled((inputBuffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && stagedImageData == nil) || viewModel.isSending)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(Color(.systemBackground))
+            .padding(.horizontal).padding(.vertical, 8).background(Color(.systemBackground))
         }
     }
 }
@@ -1063,12 +954,8 @@ struct SessionHistoryView: View {
         NavigationStack {
             List {
                 Section {
-                    Button(action: {
-                        viewModel.createNewSession()
-                        dismiss()
-                    }) {
-                        Label("Start New Chat Session", systemImage: "plus.circle.fill")
-                            .foregroundColor(.blue)
+                    Button(action: { viewModel.createNewSession(); dismiss() }) {
+                        Label("Start New Chat Session", systemImage: "plus.circle.fill").foregroundColor(.blue)
                     }
                 }
                 
@@ -1076,38 +963,27 @@ struct SessionHistoryView: View {
                     ForEach(viewModel.sessions) { session in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(session.title)
-                                    .fontWeight(viewModel.currentSessionId == session.id ? .bold : .regular)
-                                Text("Created \(session.createdAt, style: .date) \(session.createdAt, style: .time)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                Text(session.title).fontWeight(viewModel.currentSessionId == session.id ? .bold : .regular)
+                                HStack {
+                                    Text("@\(session.agentId)").font(.caption2).padding(3).background(Color(.systemGray6)).cornerRadius(4)
+                                    Text("\(session.createdAt, style: .date) \(session.createdAt, style: .time)").font(.caption2).foregroundColor(.secondary)
+                                }
                             }
                             Spacer()
-                            if viewModel.currentSessionId == session.id {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.blue)
-                            }
+                            if viewModel.currentSessionId == session.id { Image(systemName: "checkmark.circle.fill").foregroundColor(.blue) }
                         }
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            viewModel.currentSessionId = session.id
-                            dismiss()
-                        }
+                        .onTapGesture { viewModel.currentSessionId = session.id; viewModel.targetAgent = session.agentId; dismiss() }
                     }
                     .onDelete { indexSet in
-                        for index in indexSet {
-                            let session = viewModel.sessions[index]
-                            viewModel.deleteSession(session)
-                        }
+                        for index in indexSet { viewModel.deleteSession(viewModel.sessions[index]) }
                     }
                 }
             }
             .navigationTitle("Chat History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
+                ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } }
             }
         }
     }
@@ -1127,35 +1003,16 @@ struct EncryptedImageView: View {
     var body: some View {
         Group {
             if let uiImage = image {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 240, maxHeight: 240)
-                    .cornerRadius(12)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        showFullScreen = true
-                    }
-                    .fullScreenCover(isPresented: $showFullScreen) {
-                        FullScreenImageViewer(uiImage: uiImage)
-                    }
+                Image(uiImage: uiImage).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: 240, maxHeight: 240).cornerRadius(12).contentShape(Rectangle())
+                    .onTapGesture { showFullScreen = true }
+                    .fullScreenCover(isPresented: $showFullScreen) { FullScreenImageViewer(uiImage: uiImage) }
             } else if isLoading {
-                ProgressView()
-                    .frame(width: 120, height: 120)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
+                ProgressView().frame(width: 120, height: 120).background(Color(.systemGray6)).cornerRadius(12)
             } else {
-                Label(errorMessage ?? "Unavailable", systemImage: "wifi.exclamationmark")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
+                Label(errorMessage ?? "Unavailable", systemImage: "wifi.exclamationmark").font(.caption).foregroundColor(.orange).padding(8).background(Color(.systemGray6)).cornerRadius(8)
             }
         }
-        .task {
-            await loadAndDecryptImage()
-        }
+        .task { await loadAndDecryptImage() }
     }
     
     private func loadAndDecryptImage() async {
@@ -1163,29 +1020,21 @@ struct EncryptedImageView: View {
         do {
             var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 10.0)
             let trimmedToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedToken.isEmpty {
-                request.setValue("Bearer \(trimmedToken)", forHTTPHeaderField: "Authorization")
-            }
+            if !trimmedToken.isEmpty { request.setValue("Bearer \(trimmedToken)", forHTTPHeaderField: "Authorization") }
             
             let (encData, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                errorMessage = "Download Error"
-                isLoading = false
-                return
+                errorMessage = "Download Error"; isLoading = false; return
             }
             
-            if let crypto = E2EECrypto(passphrase: passphrase),
-               let decryptedData = crypto.decryptData(encData),
-               let decodedImage = UIImage(data: decryptedData) {
+            if let crypto = E2EECrypto(passphrase: passphrase), let decryptedData = crypto.decryptData(encData), let decodedImage = UIImage(data: decryptedData) {
                 self.image = decodedImage
             } else if let unencryptedImage = UIImage(data: encData) {
                 self.image = unencryptedImage
             } else {
                 errorMessage = "Invalid Format"
             }
-        } catch {
-            errorMessage = "Image Unavailable"
-        }
+        } catch { errorMessage = "Image Unavailable" }
         isLoading = false
     }
 }
@@ -1200,30 +1049,17 @@ struct FullScreenImageViewer: View {
         NavigationStack {
             ZStack {
                 Color.black.ignoresSafeArea()
-                
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+                Image(uiImage: uiImage).resizable().aspectRatio(contentMode: .fit)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: { showShareSheet = true }) {
-                        Image(systemName: "square.and.arrow.up")
-                            .foregroundColor(.white)
-                    }
+                    Button(action: { showShareSheet = true }) { Image(systemName: "square.and.arrow.up").foregroundColor(.white) }
                 }
-                
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                    }
+                    Button(action: { dismiss() }) { Image(systemName: "xmark.circle.fill").font(.title2).foregroundColor(.white) }
                 }
             }
-            .sheet(isPresented: $showShareSheet) {
-                ActivityViewController(activityItems: [uiImage])
-            }
+            .sheet(isPresented: $showShareSheet) { ActivityViewController(activityItems: [uiImage]) }
         }
     }
 }
@@ -1231,11 +1067,7 @@ struct FullScreenImageViewer: View {
 // MARK: - Native Share Sheet Bridge
 struct ActivityViewController: UIViewControllerRepresentable {
     var activityItems: [Any]
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-    
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: activityItems, applicationActivities: nil) }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
@@ -1245,7 +1077,6 @@ struct ChatBubble: View {
     let passphrase: String
     let authToken: String
     let onActionTap: (String) -> Void
-    
     @State private var showFullScreenLocal: Bool = false
     
     var body: some View {
@@ -1253,68 +1084,35 @@ struct ChatBubble: View {
             if message.isFromUser { Spacer() }
             
             VStack(alignment: message.isFromUser ? .trailing : .leading, spacing: 6) {
-                
                 if let localData = message.localImageData, let uiImage = UIImage(data: localData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: 240, maxHeight: 240)
-                        .cornerRadius(12)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showFullScreenLocal = true
-                        }
-                        .fullScreenCover(isPresented: $showFullScreenLocal) {
-                            FullScreenImageViewer(uiImage: uiImage)
-                        }
+                    Image(uiImage: uiImage).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: 240, maxHeight: 240).cornerRadius(12).contentShape(Rectangle())
+                        .onTapGesture { showFullScreenLocal = true }
+                        .fullScreenCover(isPresented: $showFullScreenLocal) { FullScreenImageViewer(uiImage: uiImage) }
                 } else if let urlString = message.attachmentUrl {
                     EncryptedImageView(urlString: urlString, passphrase: passphrase, authToken: authToken)
                 }
                 
                 if !message.text.isEmpty && message.text != "Sent an attachment" {
                     Text(message.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(message.isFromUser ? Color.blue : Color(.systemGray5))
-                        .foregroundColor(message.isFromUser ? .white : .primary)
-                        .cornerRadius(18)
+                        .padding(.horizontal, 14).padding(.vertical, 10).background(message.isFromUser ? Color.blue : Color(.systemGray5)).foregroundColor(message.isFromUser ? .white : .primary).cornerRadius(18)
                 }
                 
                 if let actions = message.actions, !actions.isEmpty {
                     HStack(spacing: 8) {
                         ForEach(actions) { act in
-                            Button(action: {
-                                if let body = act.body {
-                                    onActionTap(body)
-                                }
-                            }) {
-                                Text(act.label)
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.15))
-                                    .foregroundColor(.blue)
-                                    .cornerRadius(12)
+                            Button(action: { if let body = act.body { onActionTap(body) } }) {
+                                Text(act.label).font(.caption).fontWeight(.bold).padding(.horizontal, 12).padding(.vertical, 6).background(Color.blue.opacity(0.15)).foregroundColor(.blue).cornerRadius(12)
                             }
                         }
                     }
                 }
                 
                 HStack(spacing: 4) {
-                    Text(message.timestamp, style: .time)
-                        .font(.caption2)
-                        .foregroundColor(.gray)
-                    
-                    if message.isFromUser {
-                        Image(systemName: message.isDelivered ? "checkmark.circle.fill" : "clock")
-                            .font(.system(size: 10))
-                            .foregroundColor(message.isDelivered ? .blue : .gray)
-                    }
+                    Text(message.timestamp, style: .time).font(.caption2).foregroundColor(.gray)
+                    if message.isFromUser { Image(systemName: message.isDelivered ? "checkmark.circle.fill" : "clock").font(.system(size: 10)).foregroundColor(message.isDelivered ? .blue : .gray) }
                 }
                 .padding(.horizontal, 4)
             }
-            
             if !message.isFromUser { Spacer() }
         }
     }
@@ -1329,99 +1127,34 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section(header: Text("Bridge Identities")) {
-                    TextField("Target Instance ID", text: $viewModel.bridgeTargetId)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .foregroundColor(.secondary)
-                    
-                    TextField("Sender User ID", text: $viewModel.bridgeSenderId)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .foregroundColor(.secondary)
+                    TextField("Target Instance ID", text: $viewModel.bridgeTargetId).autocapitalization(.none).disableAutocorrection(true).foregroundColor(.secondary)
+                    TextField("Sender User ID", text: $viewModel.bridgeSenderId).autocapitalization(.none).disableAutocorrection(true).foregroundColor(.secondary)
                 }
-                
                 Section(header: Text("Target Agent")) {
                     Picker("Active Agent", selection: $viewModel.targetAgent) {
-                        ForEach(viewModel.availableAgents, id: \.self) { agentId in
-                            Text("@\(agentId)").tag(agentId)
-                        }
+                        ForEach(viewModel.availableAgents, id: \.self) { agentId in Text("@\(agentId)").tag(agentId) }
                     }
-                    
-                    Button(action: {
-                        viewModel.requestAgentList()
-                    }) {
-                        HStack {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                            Text("Refresh Agent List Over NTFY")
-                        }
-                    }
+                    Button(action: { viewModel.requestAgentList() }) { HStack { Image(systemName: "arrow.triangle.2.circlepath"); Text("Refresh Agent List Over NTFY") } }
                 }
-                
                 Section(header: Text("Server Configuration")) {
-                    TextField("Server URL", text: $viewModel.serverUrl)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .keyboardType(.URL)
-                    
-                    SecureField("Authorization Token (Optional)", text: $viewModel.authorizationToken)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                    TextField("Server URL", text: $viewModel.serverUrl).autocapitalization(.none).disableAutocorrection(true).keyboardType(.URL)
+                    SecureField("Authorization Token (Optional)", text: $viewModel.authorizationToken).autocapitalization(.none).disableAutocorrection(true)
                 }
-                
                 Section(header: Text("NTFY Channel")) {
-                    TextField("NTFY Topic Name", text: $viewModel.topic)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                    TextField("NTFY Topic Name", text: $viewModel.topic).autocapitalization(.none).disableAutocorrection(true)
                 }
-                
-                Section(
-                    header: Text("Bridge Security"),
-                    footer: Text("HMAC Secret verifies sender identity. E2EE Passphrase encrypts payloads with AES-256-GCM.")
-                ) {
-                    SecureField("HMAC Secret (Signatures)", text: $viewModel.hmacSecret)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        
-                    SecureField("E2EE Passphrase (Encryption)", text: $viewModel.encryptionPassphrase)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
+                Section(header: Text("Bridge Security"), footer: Text("HMAC Secret verifies sender identity. E2EE Passphrase encrypts payloads with AES-256-GCM.")) {
+                    SecureField("HMAC Secret (Signatures)", text: $viewModel.hmacSecret).autocapitalization(.none).disableAutocorrection(true)
+                    SecureField("E2EE Passphrase (Encryption)", text: $viewModel.encryptionPassphrase).autocapitalization(.none).disableAutocorrection(true)
                 }
-                
                 Section(header: Text("Local Storage & Retention")) {
                     Picker("History Retention", selection: $viewModel.retentionDays) {
-                        Text("1 Day").tag(1)
-                        Text("3 Days").tag(3)
-                        Text("7 Days").tag(7)
-                        Text("14 Days").tag(14)
-                        Text("30 Days").tag(30)
-                    }
-                }
-                
-                Section(header: Text("About")) {
-                    HStack {
-                        Text("App Name")
-                        Spacer()
-                        Text("Gaia Messenger")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text("1.3.0 (Bridge Edition)")
-                            .foregroundColor(.secondary)
+                        Text("1 Day").tag(1); Text("3 Days").tag(3); Text("7 Days").tag(7); Text("14 Days").tag(14); Text("30 Days").tag(30)
                     }
                 }
             }
-            .navigationTitle("Channel Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .fontWeight(.bold)
-                }
-            }
+            .navigationTitle("Channel Settings").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() }.fontWeight(.bold) } }
         }
     }
 }
