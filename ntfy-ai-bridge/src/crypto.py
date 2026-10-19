@@ -28,8 +28,8 @@ class SecurityEngine:
     """Handles AES-256-GCM End-to-End Encryption and HMAC Anti-Spoofing Signatures."""
 
     def __init__(self, e2ee_passphrase: str, hmac_secret: str):
-        self.passphrase = e2ee_passphrase
-        self.hmac_secret = hmac_secret.encode('utf-8')
+        self.passphrase = e2ee_passphrase.strip()
+        self.hmac_secret = hmac_secret.strip().encode('utf-8')
 
     # ---------------------------------------------------------
     # 1. AES-256-GCM Encryption (Text & Binary)
@@ -78,6 +78,7 @@ class SecurityEngine:
             key = self._derive_key(self.passphrase, salt)
             return AESGCM(key).decrypt(nonce, ciphertext, None)
         except Exception as e:
+            print(f"Tried to decrypt: {repr(enc_data)}")
             raise ValueError(f"Failed to decrypt binary payload: {e}")
 
     def encrypt_text(self, text: str) -> str:
