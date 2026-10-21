@@ -1052,6 +1052,18 @@
 
           messages.push(msgObj);
           messages.sort((a, b) => a.time - b.time);
+
+          // --- Mark Preceding User Prompt as Completed ---
+          if (!isUser) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i].isFromUser && messages[i].sessionId === msgThreadId) {
+                messages[i].pipelineStatus = "completed";
+                break;
+              }
+            }
+            triggerAlert(`GAIA (@${msgObj.agentId})`, displayText || "Received attachment");
+          }
+
           saveMessagesToStorage();
           renderMessages();
 
@@ -1295,21 +1307,32 @@
           const deliveryIcon = document.createElement("span");
           deliveryIcon.className = "delivery-icon";
 
-          if (m.pipelineStatus === "processing") {
+          // Auto-resolve: if any agent response exists after this prompt, it's completed
+          const hasBeenAnswered = messages.some(other => 
+            !other.isFromUser && 
+            other.sessionId === m.sessionId && 
+            new Date(other.time) >= new Date(m.time)
+          );
+
+          const status = (hasBeenAnswered || m.pipelineStatus === "completed") 
+            ? "completed" 
+            : (m.pipelineStatus || (m.isDelivered ? "received" : "pending"));
+
+          if (status === "processing") {
             deliveryIcon.textContent = "🧠";
             deliveryIcon.title = "Agent is thinking / executing tools...";
-          } else if (m.pipelineStatus === "received") {
-            deliveryIcon.textContent = "✓";
-            deliveryIcon.className += " delivered";
-            deliveryIcon.title = "Received by GAIA bridge";
-          } else if (m.pipelineStatus === "completed" || m.isDelivered) {
+          } else if (status === "completed") {
             deliveryIcon.textContent = "✓✓";
             deliveryIcon.className += " delivered";
             deliveryIcon.title = "Response completed";
+          } else if (status === "received") {
+            deliveryIcon.textContent = "✓";
+            deliveryIcon.className += " delivered";
+            deliveryIcon.title = "Received by GAIA bridge";
           } else {
             deliveryIcon.textContent = "🕒";
             deliveryIcon.className += " pending";
-            deliveryIcon.title = "In flight / waiting for bridge...";
+            deliveryIcon.title = "Sending...";
           }
 
           metaRow.appendChild(deliveryIcon);
