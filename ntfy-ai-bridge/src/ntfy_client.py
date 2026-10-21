@@ -423,61 +423,58 @@ class NtfyClient:
         title: str,
         message: str,
         priority: str = "default",
-        session_id: Optional[str] = None,
-        thread_id: Optional[str] = None,
+        thread_id: str = "alerts",
         target_client: str = "*",
-        target_server: str = "*",
-        agent_id: Optional[str] = None,
-        msg_type: str = "chat",
+        agent_id: str = "kevins-pa",
+        msg_type: str = "notification",
         attachment_bytes: Optional[bytes] = None,
         filename: Optional[str] = None,
     ) -> bool:
-        """Encrypts and publishes an enveloped notification or attachment to the outbound ntfy topic."""
-        post_url = f"{self.server_url}/{self.topic}"
-        resolved_agent = agent_id or self.backend.target_id or "kevins-pa"
-        resolved_thread = thread_id or session_id or "main"
+        """Sends an encrypted notification envelope to ntfy matching client routing rules."""
+        priority_map = {"min": "1", "low": "2", "default": "3", "high": "4", "urgent": "5"}
+        prio_val = priority_map.get(str(priority).lower(), "3")
+
+        # 1. Ensure title contains [GAIA] or [Assistant] so clients classify it as server-originated
+        formatted_title = title if ("[" in title or "GAIA" in title or "Assistant" in title) else f"[GAIA] {title}"
+
+        # 2. Package routing tags
+        tag_list = [f"tid:{thread_id}", f"agent:{agent_id}", "robot"]
+        tags_header = ",".join(tag_list)
+
+        # 3. Encrypt payload if E2EE passphrase is configured
+        outbound_message = message
+        if self.config.get("security", {}).get("e2ee_passphrase") and outbound_message:
+            outbound_message = self.security.encrypt_text(outbound_message)
 
         headers = {
-            "Title": title,
-            "Priority": priority,
+            "Title": formatted_title,
+            "Priority": prio_val,
+            "Tags": tags_header,
             "X-Sender-Type": "server",
             "X-Sender-ID": self.instance_id,
-            "X-Target-Server": target_server,
             "X-Target-Client": target_client,
-            "X-Agent-ID": resolved_agent,
-            "X-Thread-ID": resolved_thread,
+            "X-Thread-ID": thread_id,
             "X-Message-Type": msg_type,
-            "Tags": f"tid:{resolved_thread},agent:{resolved_agent}",
         }
 
         if self.auth_token:
-            headers["Authorization"] = (
-                self.auth_token
-                if self.auth_token.lower().startswith(("bearer ", "basic "))
-                else f"Bearer {self.auth_token}"
-            )
+            headers["Authorization"] = f"Bearer {self.auth_token}"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        cleaned_server = self.server_url.rstrip("/")
+        publish_url = f"{cleaned_server}/{self.topic}"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
             try:
-                # Binary Attachment Path (PUT)
                 if attachment_bytes:
-                    enc_bytes = self.security.encrypt_bytes(attachment_bytes)
-                    headers["Filename"] = f"enc_{filename or 'file.bin'}"
-
-                    if message:
-                        enc_msg = self.security.encrypt_text(message)
-                        headers["Message"] = enc_msg.replace("\r\n", " ").replace("\n", " ")
-
-                    resp = await client.put(post_url, content=enc_bytes, headers=headers)
-                    return resp.status_code in (200, 201, 202)
-
-                # Standard Encrypted Text Notification (POST)
-                enc_message = self.security.encrypt_text(message)
-                resp = await client.post(post_url, content=enc_message.encode("utf-8"), headers=headers)
-                return resp.status_code in (200, 201, 202)
-
+                    headers["Filename"] = filename or "enc_file.bin"
+                    if outbound_message:
+                        headers["Message"] = outbound_message.replace("\r", " ").replace("\n", " ")
+                    resp = await client.put(publish_url, content=attachment_bytes, headers=headers)
+                else:
+                    resp = await client.post(publish_url, content=outbound_message.encode("utf-8"), headers=headers)
+                return resp.status_code in (200, 201)
             except Exception as err:
-                logger.error(f"Outbound ntfy publish error: {err}")
+                logger.error(f"Failed to post notification to ntfy: {err}")
                 return False
 
     async def send_reply(

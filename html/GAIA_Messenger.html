@@ -880,6 +880,7 @@
         let rawPayload = (payload.message || "").trim();
         let attachmentUrl = null;
 
+        // 1. Text attachment resolution
         if (payload.attachment && payload.attachment.url) {
           const att = payload.attachment;
           const attName = (att.name || "").toLowerCase();
@@ -915,16 +916,8 @@
         }
 
         let displayText = rawPayload ? await decryptText(rawPayload) : "";
-        let routing = {
-          sender_type: "server",
-          sender_id: "",
-          target_server: "*",
-          target_client: "*",
-          agent_id: "",
-          thread_id: "main"
-        };
 
-        // Inside handleSseEvent(event) right after decryptText:
+        // 2. Intercept silent ACK packets
         if (displayText.startsWith("{")) {
           try {
             const parsed = JSON.parse(displayText);
@@ -935,12 +928,21 @@
                 saveMessagesToStorage();
                 renderMessages();
               }
-              return; // ACK handled, exit early
+              return;
             }
           } catch (e) {}
         }
 
-        // Tag Fallbacks
+        // 3. Extract Routing Tags & Body Envelopes
+        let routing = {
+          sender_type: "server",
+          sender_id: "",
+          target_server: "*",
+          target_client: "*",
+          agent_id: "",
+          thread_id: ""
+        };
+
         const tags = payload.tags || [];
         tags.forEach(t => {
           if (t.startsWith("tid:")) routing.thread_id = t.replace("tid:", "");
@@ -949,7 +951,6 @@
           else if (t.startsWith("client:")) routing.sender_id = t.replace("client:", "");
         });
 
-        // Inspect JSON body envelope
         if (displayText.startsWith("{")) {
           try {
             const parsedEnv = JSON.parse(displayText);
@@ -962,22 +963,25 @@
         }
 
         const title = payload.title || "";
-        const isUser = (routing.sender_type === "client") || 
-          (!title.includes("[") && !title.includes("Assistant") && !title.includes("GAIA"));
+        const hasClientTag = tags.some(t => t.startsWith("client:"));
+        const hasRobotTag = tags.includes("robot");
 
-        // Guardrail 1: Echo suppression & sibling client filtering
+        // 4. Robust Origin Classification:
+        // A message is from the user ONLY if explicitly tagged with client: or marked sender_type: "client"
+        const isUser = (routing.sender_type === "client") || hasClientTag;
+
+        // 5. Echo Suppression & Multi-Device Filtering
         if (isUser) {
           if (routing.sender_id && routing.sender_id !== config.senderId) {
-            // Sibling client prompt on shared ntfy topic; ignore
-            return;
+            return; // Sibling client prompt; ignore
           }
         } else {
-          // Message came from a server bridge. Ensure it was targeted to us or broadcast
           if (routing.target_client !== "*" && routing.target_client !== config.senderId) {
-            return;
+            return; // Targeted at a different device
           }
         }
 
+        // 6. System Commands & Agent Lists
         if (displayText.startsWith("[AGENTS_LIST]:")) {
           try {
             const jsonPart = displayText.replace("[AGENTS_LIST]:", "").trim();
@@ -987,26 +991,34 @@
           return;
         }
 
+        if (displayText.startsWith("[SYSTEM_COMMAND:")) return;
+
         displayText = extractTextFromDecryptedPayload(displayText);
 
         const msgTime = new Date(payload.time * 1000);
-        let msgThreadId = routing.thread_id || "main";
-        let msgAgentId = routing.agent_id ? routing.agent_id.toLowerCase() : null;
 
+        // 7. Deterministic Thread Resolution:
+        // Notifications without a specified thread default to 'alerts'
+        let msgThreadId = routing.thread_id;
+        if (!msgThreadId) {
+          msgThreadId = isUser ? "main" : "alerts";
+        }
+
+        let msgAgentId = routing.agent_id ? routing.agent_id.toLowerCase() : null;
         if (!msgAgentId && title) {
           const match = title.match(/@([a-zA-Z0-9_-]+)/) || title.match(/\(([a-zA-Z0-9_-]+)\)/);
           if (match) msgAgentId = match[1].toLowerCase();
         }
 
-        // Dynamically track new task/topic thread
+        // 8. Track or create target thread session
         let targetSession = sessions.find(s => s.id === msgThreadId);
         if (!targetSession) {
           const autoTitle = (msgThreadId === "alerts") ? "🔔 System Alerts" : `# ${msgThreadId}`;
           targetSession = {
             id: msgThreadId,
             title: autoTitle,
-            agentId: msgAgentId || getCurrentAgent(),
-            isPinned: false,
+            agentId: msgAgentId || (isUser ? getCurrentAgent() : "system"),
+            isPinned: (msgThreadId === "main" || msgThreadId === "alerts"),
             createdAt: msgTime.getTime(),
             updatedAt: msgTime.getTime()
           };
@@ -1015,14 +1027,16 @@
           renderSidebar();
         } else {
           targetSession.updatedAt = msgTime.getTime();
-          if (msgAgentId && msgAgentId !== "system") targetSession.agentId = msgAgentId;
+          if (msgAgentId && msgAgentId !== "system" && !targetSession.isPinned) {
+            targetSession.agentId = msgAgentId;
+          }
           saveSessionsToStorage();
           renderSidebar();
         }
 
         if (msgAgentId) registerDiscoveredAgent(msgAgentId);
 
-        // Deduplication & local delivery matching
+        // 9. Message Deduplication & Rendering
         const localIndex = messages.findIndex(m => 
           m.isFromUser && 
           (m.id === payload.id || (m.id.startsWith("temp-") && m.text.trim() === displayText.trim()))
@@ -1043,7 +1057,7 @@
             text: displayText,
             attachmentUrl: attachmentUrl,
             isFromUser: isUser,
-            agentId: msgAgentId || targetSession.agentId || getCurrentAgent(),
+            agentId: msgAgentId || targetSession.agentId || (isUser ? getCurrentAgent() : "system"),
             sessionId: msgThreadId,
             isDelivered: true,
             time: msgTime,
@@ -1053,7 +1067,7 @@
           messages.push(msgObj);
           messages.sort((a, b) => a.time - b.time);
 
-          // --- Mark Preceding User Prompt as Completed ---
+          // Mark preceding user prompt in this slot completed & trigger alert
           if (!isUser) {
             for (let i = messages.length - 1; i >= 0; i--) {
               if (messages[i].isFromUser && messages[i].sessionId === msgThreadId) {
@@ -1061,15 +1075,11 @@
                 break;
               }
             }
-            triggerAlert(`GAIA (@${msgObj.agentId})`, displayText || "Received attachment");
+            triggerAlert(title || `GAIA (@${msgObj.agentId})`, displayText || "Notification alert");
           }
 
           saveMessagesToStorage();
           renderMessages();
-
-          if (!isUser) {
-            triggerAlert(`GAIA (@${msgObj.agentId})`, displayText || "Received attachment");
-          }
         }
       } catch (e) {
         console.error("Stream parse error:", e);
