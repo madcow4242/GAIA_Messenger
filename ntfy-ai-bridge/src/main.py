@@ -66,11 +66,16 @@ async def health_check():
 
 @app.post("/v1/publish")
 async def publish_notification(payload: dict = Body(...)):
-    """Local endpoint used by GAIA's `notify` tool or scripts to send notifications."""
+    """Local endpoint used by GAIA's `notify` tool or cron scripts to send notifications."""
     title = payload.get("title", f"[{config['bridge'].get('display_name', 'Assistant')}]")
-    message = payload.get("message", "")
+    message = payload.get("message") or payload.get("body", "")
     priority = payload.get("priority", "default")
-    session_id = payload.get("session_id")
+
+    # Routing envelope fields
+    thread_id = payload.get("thread_id") or payload.get("session_id") or "main"
+    target_client = payload.get("target_client", "*")
+    agent_id = payload.get("agent_id") or config.get("backend", {}).get("default_model", "kevins-pa")
+    msg_type = payload.get("msg_type", "notification")
     attachment_path = payload.get("attachment_path")
 
     if not message and not attachment_path:
@@ -89,7 +94,10 @@ async def publish_notification(payload: dict = Body(...)):
         title=title,
         message=message,
         priority=priority,
-        session_id=session_id,
+        thread_id=thread_id,
+        target_client=target_client,
+        agent_id=agent_id,
+        msg_type=msg_type,
         attachment_bytes=attachment_bytes,
         filename=filename,
     )

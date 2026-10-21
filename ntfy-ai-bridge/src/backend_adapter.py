@@ -151,20 +151,62 @@ class BackendAdapter:
 
         return await self._create_gaia_session(agent_type, client_sid, client)
 
+    def _parse_client_sid(self, client_sid: str) -> tuple[str, str, str]:
+        """Parses 'sender_id::agent_id::thread_id' into individual components."""
+        parts = client_sid.split("::")
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            return parts[0], self.target_id, parts[1]
+        return client_sid, self.target_id, "main"
+
+    async def _resolve_gaia_session(self, client_sid: str, agent_type: str, client: httpx.AsyncClient) -> str:
+        """Resolves or maps a client compound key to an existing or new GAIA server session ID."""
+        cache_key = (client_sid, agent_type)
+        if cache_key in self._gaia_session_cache:
+            return self._gaia_session_cache[cache_key]
+
+        sender_id, _, thread_id = self._parse_client_sid(client_sid)
+        title_marker = f"ntfy [{thread_id}] {sender_id}"
+
+        # 1. Check GAIA's existing sessions to reconnect after bridge reboots
+        try:
+            sessions_url = f"{self.api_url}/api/sessions"
+            resp = await client.get(sessions_url, headers=self._get_headers(), timeout=10.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("sessions") or data.get("data", [])
+                for session in items:
+                    # Match on thread slot and sender identity
+                    if title_marker in session.get("title", ""):
+                        existing_sid = session.get("id") or session.get("session_id")
+                        if existing_sid:
+                            logger.info(f"Reconnected to existing GAIA session '{existing_sid}' for '{title_marker}'.")
+                            self._gaia_session_cache[cache_key] = existing_sid
+                            return existing_sid
+        except Exception as err:
+            logger.warning(f"Could not query GAIA existing sessions: {err}")
+
+        # 2. No matching session found; create a fresh one
+        return await self._create_gaia_session(agent_type, client_sid, client)
+
     async def _create_gaia_session(self, agent_type: str, client_sid: str, client: httpx.AsyncClient) -> str:
-        """Creates a registered session on GAIA via POST /api/sessions."""
+        """Creates a registered session on GAIA via POST /api/sessions with a clear title slot."""
         url = f"{self.api_url}/api/sessions"
         headers = self._get_headers()
 
+        sender_id, _, thread_id = self._parse_client_sid(client_sid)
+        session_title = f"ntfy [{thread_id}] {sender_id} (@{agent_type})"
+
         payload = {
             "agent_type": agent_type,
-            "title": f"ntfy Session [{agent_type}] ({client_sid[:12]})"
+            "title": session_title
         }
 
         try:
-            logger.info(f"Creating new session on GAIA for agent_type='{agent_type}', client_sid='{client_sid}'...")
+            logger.info(f"Creating new session on GAIA: '{session_title}'...")
             resp = await client.post(url, json=payload, headers=headers, timeout=15.0)
-            
+
             if resp.status_code in (200, 201):
                 data = resp.json()
                 sid = data.get("id") or data.get("session_id")
@@ -172,12 +214,12 @@ class BackendAdapter:
                     logger.info(f"Successfully initialized GAIA session '{sid}' for agent '{agent_type}'.")
                     self._gaia_session_cache[(client_sid, agent_type)] = sid
                     return sid
-            
+
             logger.error(f"GAIA /api/sessions error HTTP {resp.status_code}: {resp.text}")
         except Exception as err:
             logger.error(f"Failed connecting to GAIA /api/sessions: {err}")
 
-        # Fallback to passing the client_sid directly if /api/sessions is unavailable
+        # Fallback to passing client_sid directly if /api/sessions is unreachable
         return client_sid
 
     # -------------------------------------------------------------------------

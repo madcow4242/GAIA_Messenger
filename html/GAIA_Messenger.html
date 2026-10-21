@@ -3,7 +3,7 @@
 - Project: GAIA Messenger
 - File:    GAIA_Messenger.html
 - Author:  Kevin Cazabon (kevin@cazabon.com)
-- Version: 1.1.0 / 10/13/2026
+- Version: 1.2.0 / 10/21/2026
 - Copyright (c) 2026 Kevin Cazabon
  *
 - This software is released under the MIT License.
@@ -102,6 +102,15 @@
       font-weight: 600;
       font-size: 10px;
     }
+    .badge-pinned {
+      background: #e1f5fe;
+      color: #0288d1;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
     .history-item.active .badge-agent { background: #cce4ff; color: #0062cc; }
     .btn-del-session {
       display: none;
@@ -183,7 +192,6 @@
     .btn-secondary { background: #e5e5ea; color: #000; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
     .btn-primary { background: #007aff; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
 
-    /* Mobile Responsive Logic */
     @media (max-width: 768px) {
       #sidebar { position: fixed; top: 0; bottom: 0; left: 0; transform: translateX(-100%); }
       #sidebar.open { transform: translateX(0); }
@@ -194,19 +202,16 @@
 <body>
 
   <div id="app-container">
-    <!-- Backdrop Overlay for Mobile -->
     <div id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
 
-    <!-- Grouped Conversation Sidebar -->
     <aside id="sidebar">
       <div class="sidebar-header">
-        <h2>Conversations</h2>
-        <button class="btn-new-chat-sidebar" onclick="createNewSession()">➕ New Chat</button>
+        <h2>Threads & Slots</h2>
+        <button class="btn-new-chat-sidebar" onclick="promptCreateTopic()">➕ New Topic</button>
       </div>
       <div id="history-container"></div>
     </aside>
 
-    <!-- Main Message Area -->
     <main id="main-chat">
       <header>
         <div class="header-left">
@@ -224,19 +229,16 @@
 
       <div id="chat-container"></div>
 
-      <!-- Attachment Preview -->
       <div id="staged-bar">
         <img id="staged-preview" src="" alt="Attachment Preview">
         <span style="font-size: 12px; color: #8e8e93;">Photo attached</span>
         <button style="margin-left: auto; background: none; border: none; cursor: pointer; font-size: 16px;" onclick="clearStagedImage()">❌</button>
       </div>
 
-      <!-- Input Dock -->
       <div class="input-area">
         <input type="file" id="file-input" accept="image/*" style="display: none;" onchange="handleFileSelect(event)">
         <button class="clip-btn" onclick="document.getElementById('file-input').click()">📎</button>
         
-        <!-- Target Agent Dropdown -->
         <select id="agent-select" title="Target Agent" onchange="handleAgentChange(this.value)"></select>
         
         <input type="text" id="message-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)">
@@ -245,10 +247,9 @@
     </main>
   </div>
 
-  <!-- Settings Modal -->
   <div id="settings-modal">
     <div class="modal-content">
-      <h2>Bridge & Security Settings</h2>
+      <h2>Bridge & Routing Settings</h2>
       
       <label>Server URL</label>
       <input type="text" id="cfg-server" placeholder="https://ntfy.sh">
@@ -256,11 +257,11 @@
       <label>NTFY Topic Name</label>
       <input type="text" id="cfg-topic" placeholder="my-shared-company-channel">
 
-      <label>Target Bridge Instance ID</label>
-      <input type="text" id="cfg-target-id" placeholder="node-kevin-pa">
+      <label>Target Bridge Server ID</label>
+      <input type="text" id="cfg-target-id" placeholder="gaia-desktop">
 
-      <label>Sender User ID</label>
-      <input type="text" id="cfg-sender-id" placeholder="user-kevin">
+      <label>This Client ID</label>
+      <input type="text" id="cfg-sender-id" placeholder="kevin-web">
 
       <label>HMAC Secret (Signatures)</label>
       <input type="password" id="cfg-hmac-secret" placeholder="Shared HMAC Secret">
@@ -297,8 +298,8 @@
     const config = {
       serverUrl: localStorage.getItem('ntfy_server') || "https://ntfy.sh",
       topic: localStorage.getItem('ntfy_topic') || "my-shared-company-channel",
-      targetId: localStorage.getItem('ntfy_target_id') || "node-kevin-pa",
-      senderId: localStorage.getItem('ntfy_sender_id') || "user-kevin",
+      targetId: localStorage.getItem('ntfy_target_id') || "gaia-desktop",
+      senderId: localStorage.getItem('ntfy_sender_id') || "kevin-web",
       hmacSecret: localStorage.getItem('ntfy_hmac_secret') || "",
       passphrase: localStorage.getItem('ntfy_passphrase') || "",
       authorization: localStorage.getItem('ntfy_authorization') || "",
@@ -307,14 +308,14 @@
     };
 
     let messages = [];
-    let sessions = []; // Array of { id, title, agentId, createdAt, updatedAt }
-    let activeSessionId = localStorage.getItem('gaia_active_session') || "";
+    let sessions = []; // Array of { id (thread_id), title, agentId, isPinned, createdAt, updatedAt }
+    let activeThreadId = localStorage.getItem('gaia_active_thread') || "main";
     let eventSource = null;
     let stagedFileBytes = null;
     let stagedDataUrl = null;
     const STATIC_SALT = new TextEncoder().encode("kevins-pa-salt-v1");
 
-    /* --- Smart Audio Alert & Web Push Engine --- */
+    /* --- Smart Audio Alert Engine --- */
     function playNotificationSound() {
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -323,8 +324,8 @@
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.type = "sine";
-        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08); // A5
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08);
         gain.gain.setValueAtTime(0.12, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
         osc.start(ctx.currentTime);
@@ -341,7 +342,7 @@
       }
     }
 
-    /* --- Smart Auto-Scroll Engine --- */
+    /* --- Auto-Scroll Engine --- */
     function isUserNearBottom(threshold = 140) {
       const container = document.getElementById("chat-container");
       if (!container) return true;
@@ -386,171 +387,135 @@
       restartStream();
     };
 
-    /* --- Session Lifecycle & Storage --- */
-    function generateCleanTitle(text) {
-      if (!text) return "New Conversation";
-      let clean = text.replace(/^@\w+\s+/, '').trim();
-      if (!clean) return "New Conversation";
-      return clean.length > 28 ? clean.substring(0, 28) + "…" : clean;
-    }
-
+    /* --- Deterministic Thread Slots Lifecycle --- */
     function loadSessionsFromStorage() {
-      const stored = localStorage.getItem('gaia_sessions_v2');
+      const stored = localStorage.getItem('gaia_threads_v3');
       if (stored) {
         try {
           sessions = JSON.parse(stored);
-          return;
-        } catch (e) {}
+        } catch (e) {
+          sessions = [];
+        }
       }
 
-      // Legacy Migration (from v1 object mapping)
-      const legacyStored = localStorage.getItem('gaia_sessions');
-      sessions = [];
-      if (legacyStored) {
-        try {
-          const legacyObj = JSON.parse(legacyStored);
-          Object.keys(legacyObj).forEach(agentId => {
-            if (Array.isArray(legacyObj[agentId])) {
-              legacyObj[agentId].forEach(sId => {
-                const parts = sId.split('_');
-                const ts = parseInt(parts[parts.length - 1]) || Date.now();
-                const firstMsg = messages.find(m => m.sessionId === sId && m.isFromUser);
-                const title = firstMsg ? generateCleanTitle(firstMsg.text) : "Conversation";
-                sessions.push({
-                  id: sId,
-                  title: title,
-                  agentId: agentId,
-                  createdAt: ts,
-                  updatedAt: ts
-                });
-              });
-            }
-          });
-        } catch (e) {}
-      }
-
-      if (sessions.length === 0) {
-        const initAgent = config.agents[0] || "kevins-pa";
-        const newId = `sess_${initAgent}_${Date.now()}`;
-        sessions.push({
-          id: newId,
-          title: "New Conversation",
-          agentId: initAgent,
+      // Ensure Core Permanent Channels always exist
+      const defaultAgent = config.agents[0] || "kevins-pa";
+      
+      let mainSlot = sessions.find(s => s.id === "main");
+      if (!mainSlot) {
+        mainSlot = {
+          id: "main",
+          title: "💬 Main Chat",
+          agentId: defaultAgent,
+          isPinned: true,
           createdAt: Date.now(),
           updatedAt: Date.now()
-        });
+        };
+        sessions.unshift(mainSlot);
       }
+
+      let alertsSlot = sessions.find(s => s.id === "alerts");
+      if (!alertsSlot) {
+        alertsSlot = {
+          id: "alerts",
+          title: "🔔 System Alerts",
+          agentId: "system",
+          isPinned: true,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        sessions.splice(1, 0, alertsSlot);
+      }
+
       saveSessionsToStorage();
     }
 
     function saveSessionsToStorage() {
-      localStorage.setItem('gaia_sessions_v2', JSON.stringify(sessions));
-      localStorage.setItem('gaia_active_session', activeSessionId);
+      localStorage.setItem('gaia_threads_v3', JSON.stringify(sessions));
+      localStorage.setItem('gaia_active_thread', activeThreadId);
     }
 
     function getActiveSession() {
-      return sessions.find(s => s.id === activeSessionId) || null;
+      return sessions.find(s => s.id === activeThreadId) || sessions[0];
     }
 
     function ensureActiveSession() {
-      if (sessions.length === 0) {
-        createNewSession();
-        return;
-      }
-      const existing = sessions.find(s => s.id === activeSessionId);
+      const existing = sessions.find(s => s.id === activeThreadId);
       if (!existing) {
-        activeSessionId = sessions[0].id;
-        localStorage.setItem('gaia_active_session', activeSessionId);
+        activeThreadId = "main";
+        localStorage.setItem('gaia_active_thread', activeThreadId);
       }
       syncDropdownWithActiveSession();
     }
 
-    function createNewSession() {
+    function promptCreateTopic() {
+      const name = prompt("Enter a name for the new topic/task thread:");
+      if (!name || !name.trim()) return;
+
+      const slug = name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
       const currentAgent = getCurrentAgent();
-      const newSession = {
-        id: `sess_${currentAgent}_${Date.now()}`,
-        title: "New Conversation",
-        agentId: currentAgent,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      };
-      sessions.unshift(newSession);
-      activeSessionId = newSession.id;
-      saveSessionsToStorage();
-      renderSidebar();
-      updateHeaderMetadata();
-      syncDropdownWithActiveSession();
-      renderMessages();
-      scrollToBottom(true);
-      toggleSidebar(false);
-    }
 
-    function switchSession(sessionId) {
-      activeSessionId = sessionId;
-      localStorage.setItem('gaia_active_session', activeSessionId);
-      syncDropdownWithActiveSession();
-      updateHeaderMetadata();
-      renderSidebar();
-      renderMessages();
-      scrollToBottom(true);
-      toggleSidebar(false);
-    }
-
-    function deleteSession(e, sessionId) {
-      if (e) e.stopPropagation();
-      if (!confirm("Delete this conversation thread?")) return;
-
-      messages = messages.filter(m => m.sessionId !== sessionId);
-      sessions = sessions.filter(s => s.id !== sessionId);
-
-      saveMessagesToStorage();
-
-      if (sessions.length === 0) {
-        createNewSession();
-      } else {
-        if (activeSessionId === sessionId) {
-          activeSessionId = sessions[0].id;
-        }
-        saveSessionsToStorage();
-        renderSidebar();
-        updateHeaderMetadata();
-        renderMessages();
-      }
-    }
-
-    function handleAgentChange(newAgent) {
-      const currentAgent = newAgent.toLowerCase();
-      
-      // Find the most recent session for this specific agent, or create a fresh one
-      const existingForAgent = sessions.find(s => s.agentId.toLowerCase() === currentAgent);
-      
-      if (existingForAgent) {
-        switchSession(existingForAgent.id);
-      } else {
-        // Spin up a brand new session bound to this agent
-        const newSession = {
-          id: `sess_${currentAgent}_${Date.now()}`,
-          title: "New Conversation",
+      let target = sessions.find(s => s.id === slug);
+      if (!target) {
+        target = {
+          id: slug,
+          title: `# ${name.trim()}`,
           agentId: currentAgent,
+          isPinned: false,
           createdAt: Date.now(),
           updatedAt: Date.now()
         };
-        sessions.unshift(newSession);
-        activeSessionId = newSession.id;
+        sessions.push(target);
         saveSessionsToStorage();
-        renderSidebar();
-        updateHeaderMetadata();
-        renderMessages();
-        scrollToBottom(true);
       }
+
+      switchSession(target.id);
     }
 
-    function handleAgentChange_OLD(newAgent) {
+    function switchSession(threadId) {
+      activeThreadId = threadId;
+      localStorage.setItem('gaia_active_thread', activeThreadId);
+      syncDropdownWithActiveSession();
+      updateHeaderMetadata();
+      renderSidebar();
+      renderMessages();
+      scrollToBottom(true);
+      toggleSidebar(false);
+    }
+
+    function deleteSession(e, threadId) {
+      if (e) e.stopPropagation();
+
+      const session = sessions.find(s => s.id === threadId);
+      if (session && session.isPinned) {
+        if (!confirm(`Clear message history for ${session.title}?`)) return;
+        messages = messages.filter(m => m.sessionId !== threadId);
+        saveMessagesToStorage();
+        renderMessages();
+        return;
+      }
+
+      if (!confirm("Delete this thread and its history?")) return;
+
+      messages = messages.filter(m => m.sessionId !== threadId);
+      sessions = sessions.filter(s => s.id !== threadId);
+
+      saveMessagesToStorage();
+
+      if (activeThreadId === threadId) {
+        activeThreadId = "main";
+      }
+      saveSessionsToStorage();
+      renderSidebar();
+      updateHeaderMetadata();
+      renderMessages();
+    }
+
+    function handleAgentChange(newAgent) {
       const active = getActiveSession();
-      if (active) {
-        active.agentId = newAgent;
+      if (active && !active.isPinned) {
+        active.agentId = newAgent.toLowerCase();
         saveSessionsToStorage();
-        renderSidebar();
         updateHeaderMetadata();
       }
     }
@@ -559,7 +524,7 @@
       const active = getActiveSession();
       if (!active) return;
       const select = document.getElementById("agent-select");
-      if (select && active.agentId) {
+      if (select && active.agentId && active.agentId !== "system") {
         registerDiscoveredAgent(active.agentId);
         select.value = active.agentId.toLowerCase();
       }
@@ -572,52 +537,53 @@
       document.getElementById("active-session-agent-pill").textContent = `@${active.agentId}`;
     }
 
-    /* --- Grouped Sidebar Rendering --- */
-    function categorizeSessions(sessionList) {
-      const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      const startOfYesterday = startOfToday - 86400000;
-      const startOf7Days = startOfToday - (6 * 86400000);
-
-      const groups = { today: [], yesterday: [], lastWeek: [], older: [] };
-
-      sessionList.slice().sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt)).forEach(s => {
-        const t = s.updatedAt || s.createdAt;
-        if (t >= startOfToday) groups.today.push(s);
-        else if (t >= startOfYesterday) groups.yesterday.push(s);
-        else if (t >= startOf7Days) groups.lastWeek.push(s);
-        else groups.older.push(s);
-      });
-
-      return groups;
-    }
-
     function renderSidebar() {
       const container = document.getElementById("history-container");
       container.innerHTML = "";
-      const groups = categorizeSessions(sessions);
 
-      const groupConfig = [
-        { label: "Today", items: groups.today },
-        { label: "Yesterday", items: groups.yesterday },
-        { label: "Previous 7 Days", items: groups.lastWeek },
-        { label: "Older", items: groups.older }
-      ];
+      const pinned = sessions.filter(s => s.isPinned);
+      const topics = sessions.filter(s => !s.isPinned)
+        .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
 
-      groupConfig.forEach(({ label, items }) => {
-        if (items.length === 0) return;
-
+      // 1. Core Channels
+      if (pinned.length > 0) {
         const header = document.createElement("div");
         header.className = "history-group-header";
-        header.textContent = label;
+        header.textContent = "Core Channels";
         container.appendChild(header);
 
-        items.forEach(session => {
+        pinned.forEach(session => {
           const item = document.createElement("div");
-          item.className = `history-item ${session.id === activeSessionId ? "active" : ""}`;
+          item.className = `history-item ${session.id === activeThreadId ? "active" : ""}`;
           item.onclick = () => switchSession(session.id);
 
-          const timeStr = new Date(session.updatedAt || session.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          item.innerHTML = `
+            <div class="history-item-top">
+              <span class="history-item-title">${escapeHTML(session.title)}</span>
+              <button class="btn-del-session" onclick="deleteSession(event, '${session.id}')" title="Clear history">🧹</button>
+            </div>
+            <div class="history-item-meta">
+              <span class="badge-pinned">Permanent</span>
+              <span>@${escapeHTML(session.agentId)}</span>
+            </div>
+          `;
+          container.appendChild(item);
+        });
+      }
+
+      // 2. Dedicated Topics & Tasks
+      if (topics.length > 0) {
+        const header = document.createElement("div");
+        header.className = "history-group-header";
+        header.textContent = "Topics & Tasks";
+        container.appendChild(header);
+
+        topics.forEach(session => {
+          const item = document.createElement("div");
+          item.className = `history-item ${session.id === activeThreadId ? "active" : ""}`;
+          item.onclick = () => switchSession(session.id);
+
+          const timeStr = new Date(session.updatedAt || session.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' });
 
           item.innerHTML = `
             <div class="history-item-top">
@@ -631,7 +597,7 @@
           `;
           container.appendChild(item);
         });
-      });
+      }
     }
 
     function toggleSidebar(forceState) {
@@ -707,7 +673,6 @@
           messages.sort((a, b) => a.time - b.time);
         }
       } catch (e) {
-        console.error("Failed loading chat history:", e);
         messages = [];
       }
     }
@@ -717,12 +682,10 @@
         const cutoff = Date.now() - (config.retentionDays * 86400 * 1000);
         const pruned = messages.filter(m => m.time.getTime() >= cutoff);
         localStorage.setItem('gaia_chat_history', JSON.stringify(pruned));
-      } catch (e) {
-        console.error("Failed saving chat history:", e);
-      }
+      } catch (e) {}
     }
 
-    /* --- Cryptography & Canonical HMAC Engine --- */
+    /* --- Cryptography Engine --- */
     async function deriveKey(passphrase, saltBuffer) {
       if (!passphrase || !window.crypto || !window.crypto.subtle) return null;
       try {
@@ -737,7 +700,6 @@
           ["encrypt", "decrypt"]
         );
       } catch (e) {
-        console.error("Derive key failed:", e);
         return null;
       }
     }
@@ -814,22 +776,22 @@
       }
     }
 
-    /* Envelope with Canonical JSON Key Ordering for Python Bridge HMAC Matching */
-    async function createSignedEnvelope(promptText, sessionId, agentId) {
+    /* Envelope with Canonical HMAC Matching */
+    async function createSignedEnvelope(promptText, threadId, agentId) {
       const encoder = new TextEncoder();
       const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
         .map(b => b.toString(16).padStart(2, '0')).join('');
       const ts = Math.floor(Date.now() / 1000);
 
-      // Explicitly include both agent_id and agent_type
+      // Keep payload flat so JS sorting matches Python's sort_keys=True byte-for-byte
       const payload = {
         agent_id: agentId,
         agent_type: agentId,
-        session_id: sessionId,
-        text: promptText
+        session_id: threadId,
+        text: promptText,
+        thread_id: threadId
       };
 
-      // Match Python: json.dumps(payload, separators=(',', ':'), sort_keys=True)
       const sortedKeys = Object.keys(payload).sort();
       const payloadJson = "{" + sortedKeys.map(k => `${JSON.stringify(k)}:${JSON.stringify(payload[k])}`).join(",") + "}";
       const sigBase = `${nonce}|${ts}|${payloadJson}`;
@@ -837,7 +799,7 @@
       let signature = "";
       if (config.hmacSecret) {
         const hmacKey = await crypto.subtle.importKey(
-          "raw", encoder.encode(config.hmacSecret),
+          "raw", encoder.encode(config.hmacSecret.trim()),
           { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
         );
         const sigBuffer = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(sigBase));
@@ -909,146 +871,192 @@
       eventSource.onmessage = (event) => handleSseEvent(event);
     }
 
+    /* --- Strict Multi-Server / Multi-Client Inbound Event Handler --- */
     async function handleSseEvent(event) {
       try {
         const payload = JSON.parse(event.data);
-        if (payload.event === "message") {
-          let rawPayload = (payload.message || "").trim();
-          let attachmentUrl = null;
+        if (payload.event !== "message") return;
 
-          if (payload.attachment && payload.attachment.url) {
-            const att = payload.attachment;
-            const attName = (att.name || "").toLowerCase();
-            const attType = (att.type || "").toLowerCase();
+        let rawPayload = (payload.message || "").trim();
+        let attachmentUrl = null;
 
-            const isTextAttachment = (
-              attName.endsWith(".txt") ||
-              attName === "attachment" ||
-              attName === "attachment.txt" ||
-              attType.startsWith("text/")
-            );
+        if (payload.attachment && payload.attachment.url) {
+          const att = payload.attachment;
+          const attName = (att.name || "").toLowerCase();
+          const attType = (att.type || "").toLowerCase();
 
-            if (isTextAttachment) {
-              try {
-                let response = await fetch(att.url);
-                if (!response.ok && config.authorization) {
-                  const authParam = getAuthQueryParam();
-                  const authenticatedUrl = att.url.includes("?") 
-                    ? `${att.url}${authParam}` 
-                    : `${att.url}?${authParam.replace(/^&/, "")}`;
-                  response = await fetch(authenticatedUrl);
-                }
-
-                if (response.ok) {
-                  const fetchedText = await response.text();
-                  if (fetchedText.trim()) rawPayload = fetchedText.trim();
-                }
-              } catch (fetchErr) {
-                console.error("❌ Failed to fetch text attachment:", fetchErr);
-              }
-              attachmentUrl = null;
-            } else {
-              attachmentUrl = att.url;
-            }
-          }
-
-          let displayText = rawPayload ? await decryptText(rawPayload) : "";
-
-          if (displayText.startsWith("[AGENTS_LIST]:")) {
-            try {
-              const jsonPart = displayText.replace("[AGENTS_LIST]:", "").trim();
-              const list = JSON.parse(jsonPart);
-              if (Array.isArray(list)) list.forEach(agent => registerDiscoveredAgent(agent));
-            } catch (err) {}
-            return;
-          }
-          if (displayText.startsWith("[SYSTEM_COMMAND:") || displayText.startsWith("[SYSTEM:")) return;
-
-          displayText = extractTextFromDecryptedPayload(displayText);
-
-          if (displayText.startsWith("You received a file:")) {
-            displayText = "⚠️ Unable to load attachment text content.";
-          }
-
-          const msgTime = new Date(payload.time * 1000);
-          let title = payload.title || "";
-          
-          const isUser = !title.includes("[") && !title.includes("Assistant") && !title.includes("System") && !title.includes("GAIA");
-
-          // Extract Session ID from tags
-          let sessionTag = (payload.tags || []).find(t => t.startsWith("sid:"));
-          let msgSessionId = sessionTag ? sessionTag.replace("sid:", "") : activeSessionId;
-
-          if (!msgSessionId || msgSessionId.startsWith("ntfy_") || msgSessionId.endsWith("_default")) {
-            msgSessionId = activeSessionId;
-          }
-
-          // Resolve Agent ID from tags or title
-          let agentTag = (payload.tags || []).find(t => t.startsWith("agent:"));
-          let msgAgentId = agentTag ? agentTag.replace("agent:", "").toLowerCase() : null;
-
-          if (!msgAgentId && title) {
-            const match = title.match(/@([a-zA-Z0-9_-]+)/) || title.match(/\(([a-zA-Z0-9_-]+)\)/);
-            if (match) msgAgentId = match[1].toLowerCase();
-          }
-
-          // Ensure session object exists
-          let targetSession = sessions.find(s => s.id === msgSessionId);
-          if (!targetSession) {
-            targetSession = {
-              id: msgSessionId,
-              title: isUser ? generateCleanTitle(displayText) : "Conversation",
-              agentId: msgAgentId || getCurrentAgent(),
-              createdAt: msgTime.getTime(),
-              updatedAt: msgTime.getTime()
-            };
-            sessions.unshift(targetSession);
-            saveSessionsToStorage();
-            renderSidebar();
-          } else {
-            targetSession.updatedAt = msgTime.getTime();
-            if (msgAgentId) targetSession.agentId = msgAgentId;
-            saveSessionsToStorage();
-            renderSidebar();
-          }
-
-          if (msgAgentId) registerDiscoveredAgent(msgAgentId);
-
-          const localIndex = messages.findIndex(m => 
-            m.isFromUser && 
-            (m.id === payload.id || (m.id.startsWith("temp-") && m.text.trim() === displayText.trim()))
+          const isTextAttachment = (
+            attName.endsWith(".txt") ||
+            attName === "attachment" ||
+            attName === "attachment.txt" ||
+            attType.startsWith("text/")
           );
 
-          if (localIndex !== -1) {
-            messages[localIndex].id = payload.id;
-            messages[localIndex].isDelivered = true;
-            messages[localIndex].time = msgTime;
-            messages[localIndex].sessionId = msgSessionId;
-            if (displayText) messages[localIndex].text = displayText;
-            if (attachmentUrl) messages[localIndex].attachmentUrl = attachmentUrl;
-            saveMessagesToStorage();
-            renderMessages();
-          } else if (!messages.some(m => m.id === payload.id)) {
-            const msgObj = {
-              id: payload.id,
-              text: displayText,
-              attachmentUrl: attachmentUrl,
-              isFromUser: isUser,
-              agentId: msgAgentId || targetSession.agentId || getCurrentAgent(),
-              sessionId: msgSessionId,
-              isDelivered: true,
-              time: msgTime,
-              actions: payload.actions || null
-            };
+          if (isTextAttachment) {
+            try {
+              let response = await fetch(att.url);
+              if (!response.ok && config.authorization) {
+                const authParam = getAuthQueryParam();
+                const authenticatedUrl = att.url.includes("?") 
+                  ? `${att.url}${authParam}` 
+                  : `${att.url}?${authParam.replace(/^&/, "")}`;
+                response = await fetch(authenticatedUrl);
+              }
 
-            messages.push(msgObj);
-            messages.sort((a, b) => a.time - b.time);
-            saveMessagesToStorage();
-            renderMessages();
+              if (response.ok) {
+                const fetchedText = await response.text();
+                if (fetchedText.trim()) rawPayload = fetchedText.trim();
+              }
+            } catch (fetchErr) {}
+            attachmentUrl = null;
+          } else {
+            attachmentUrl = att.url;
+          }
+        }
 
-            if (!isUser) {
-              triggerAlert(`GAIA Assistant (@${msgObj.agentId})`, displayText || "Received attachment");
+        let displayText = rawPayload ? await decryptText(rawPayload) : "";
+        let routing = {
+          sender_type: "server",
+          sender_id: "",
+          target_server: "*",
+          target_client: "*",
+          agent_id: "",
+          thread_id: "main"
+        };
+
+        // Inside handleSseEvent(event) right after decryptText:
+        if (displayText.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(displayText);
+            if (parsed.ack && parsed.ack.ref_id) {
+              const targetMsg = messages.find(m => m.id === parsed.ack.ref_id);
+              if (targetMsg) {
+                targetMsg.pipelineStatus = parsed.ack.status; // "received" or "processing"
+                saveMessagesToStorage();
+                renderMessages();
+              }
+              return; // ACK handled, exit early
             }
+          } catch (e) {}
+        }
+
+        // Tag Fallbacks
+        const tags = payload.tags || [];
+        tags.forEach(t => {
+          if (t.startsWith("tid:")) routing.thread_id = t.replace("tid:", "");
+          else if (t.startsWith("sid:")) routing.thread_id = t.replace("sid:", "");
+          else if (t.startsWith("agent:")) routing.agent_id = t.replace("agent:", "");
+          else if (t.startsWith("client:")) routing.sender_id = t.replace("client:", "");
+        });
+
+        // Inspect JSON body envelope
+        if (displayText.startsWith("{")) {
+          try {
+            const parsedEnv = JSON.parse(displayText);
+            if (parsedEnv.payload && parsedEnv.payload.routing) {
+              routing = { ...routing, ...parsedEnv.payload.routing };
+            } else if (parsedEnv.routing) {
+              routing = { ...routing, ...parsedEnv.routing };
+            }
+          } catch (e) {}
+        }
+
+        const title = payload.title || "";
+        const isUser = (routing.sender_type === "client") || 
+          (!title.includes("[") && !title.includes("Assistant") && !title.includes("GAIA"));
+
+        // Guardrail 1: Echo suppression & sibling client filtering
+        if (isUser) {
+          if (routing.sender_id && routing.sender_id !== config.senderId) {
+            // Sibling client prompt on shared ntfy topic; ignore
+            return;
+          }
+        } else {
+          // Message came from a server bridge. Ensure it was targeted to us or broadcast
+          if (routing.target_client !== "*" && routing.target_client !== config.senderId) {
+            return;
+          }
+        }
+
+        if (displayText.startsWith("[AGENTS_LIST]:")) {
+          try {
+            const jsonPart = displayText.replace("[AGENTS_LIST]:", "").trim();
+            const list = JSON.parse(jsonPart);
+            if (Array.isArray(list)) list.forEach(agent => registerDiscoveredAgent(agent));
+          } catch (err) {}
+          return;
+        }
+
+        displayText = extractTextFromDecryptedPayload(displayText);
+
+        const msgTime = new Date(payload.time * 1000);
+        let msgThreadId = routing.thread_id || "main";
+        let msgAgentId = routing.agent_id ? routing.agent_id.toLowerCase() : null;
+
+        if (!msgAgentId && title) {
+          const match = title.match(/@([a-zA-Z0-9_-]+)/) || title.match(/\(([a-zA-Z0-9_-]+)\)/);
+          if (match) msgAgentId = match[1].toLowerCase();
+        }
+
+        // Dynamically track new task/topic thread
+        let targetSession = sessions.find(s => s.id === msgThreadId);
+        if (!targetSession) {
+          const autoTitle = (msgThreadId === "alerts") ? "🔔 System Alerts" : `# ${msgThreadId}`;
+          targetSession = {
+            id: msgThreadId,
+            title: autoTitle,
+            agentId: msgAgentId || getCurrentAgent(),
+            isPinned: false,
+            createdAt: msgTime.getTime(),
+            updatedAt: msgTime.getTime()
+          };
+          sessions.push(targetSession);
+          saveSessionsToStorage();
+          renderSidebar();
+        } else {
+          targetSession.updatedAt = msgTime.getTime();
+          if (msgAgentId && msgAgentId !== "system") targetSession.agentId = msgAgentId;
+          saveSessionsToStorage();
+          renderSidebar();
+        }
+
+        if (msgAgentId) registerDiscoveredAgent(msgAgentId);
+
+        // Deduplication & local delivery matching
+        const localIndex = messages.findIndex(m => 
+          m.isFromUser && 
+          (m.id === payload.id || (m.id.startsWith("temp-") && m.text.trim() === displayText.trim()))
+        );
+
+        if (localIndex !== -1) {
+          messages[localIndex].id = payload.id;
+          messages[localIndex].isDelivered = true;
+          messages[localIndex].time = msgTime;
+          messages[localIndex].sessionId = msgThreadId;
+          if (displayText) messages[localIndex].text = displayText;
+          if (attachmentUrl) messages[localIndex].attachmentUrl = attachmentUrl;
+          saveMessagesToStorage();
+          renderMessages();
+        } else if (!messages.some(m => m.id === payload.id)) {
+          const msgObj = {
+            id: payload.id,
+            text: displayText,
+            attachmentUrl: attachmentUrl,
+            isFromUser: isUser,
+            agentId: msgAgentId || targetSession.agentId || getCurrentAgent(),
+            sessionId: msgThreadId,
+            isDelivered: true,
+            time: msgTime,
+            actions: payload.actions || null
+          };
+
+          messages.push(msgObj);
+          messages.sort((a, b) => a.time - b.time);
+          saveMessagesToStorage();
+          renderMessages();
+
+          if (!isUser) {
+            triggerAlert(`GAIA (@${msgObj.agentId})`, displayText || "Received attachment");
           }
         }
       } catch (e) {
@@ -1072,7 +1080,7 @@
 
     async function requestAgentList() {
       try {
-        const commandEnvelope = await createSignedEnvelope("!agents", activeSessionId, getCurrentAgent());
+        const commandEnvelope = await createSignedEnvelope("!agents", activeThreadId, getCurrentAgent());
         let payloadText = commandEnvelope;
 
         if (config.passphrase) {
@@ -1082,7 +1090,7 @@
         const headers = getAuthHeaders();
         headers["Title"] = "User Command";
         headers["Priority"] = "4";
-        headers["Tags"] = `sid:${activeSessionId},agent:${getCurrentAgent()}`;
+        headers["Tags"] = `tid:${activeThreadId},agent:${getCurrentAgent()},client:${config.senderId}`;
 
         const cleanedServer = config.serverUrl.replace(/\/+$/, "");
         await fetch(`${cleanedServer}/${config.topic}`, {
@@ -1116,21 +1124,15 @@
       const tempId = "temp-" + Date.now();
       let localImgUrl = stagedDataUrl;
 
-      // Update Thread Title & Metadata
       const active = getActiveSession();
       if (active) {
-        if (active.title === "New Conversation" && text) {
-          active.title = generateCleanTitle(text);
-          updateHeaderMetadata();
-        }
         active.updatedAt = Date.now();
-        active.agentId = selectedAgent;
+        if (!active.isPinned) active.agentId = selectedAgent;
         saveSessionsToStorage();
         renderSidebar();
       }
 
-      // Build Canonical Signed Envelope
-      let signedEnvelope = await createSignedEnvelope(formattedPrompt, activeSessionId, selectedAgent);
+      let signedEnvelope = await createSignedEnvelope(formattedPrompt, activeThreadId, selectedAgent);
       let payloadText = signedEnvelope;
 
       if (config.passphrase && signedEnvelope) {
@@ -1148,7 +1150,7 @@
         localImgUrl: localImgUrl,
         isFromUser: true,
         agentId: selectedAgent,
-        sessionId: activeSessionId,
+        sessionId: activeThreadId,
         isDelivered: false,
         time: new Date()
       };
@@ -1165,9 +1167,17 @@
 
       try {
         const headers = getAuthHeaders();
-        // High priority + routing tags for APNs and bridge
         headers["Priority"] = "4";
-        headers["Tags"] = `sid:${activeSessionId},agent:${selectedAgent}`;
+        headers["Tags"] = `tid:${activeThreadId},agent:${selectedAgent},client:${config.senderId}`;
+        
+        // Explicit Routing Envelope Headers
+        headers["X-Sender-Type"] = "client";
+        headers["X-Sender-ID"] = config.senderId;
+        headers["X-Target-Server"] = config.targetId;
+        headers["X-Target-Client"] = config.senderId;
+        headers["X-Agent-ID"] = selectedAgent;
+        headers["X-Thread-ID"] = activeThreadId;
+        headers["X-Message-Type"] = "chat";
 
         const cleanedServer = config.serverUrl.replace(/\/+$/, "");
 
@@ -1175,12 +1185,7 @@
           headers["Filename"] = "enc_photo.bin";
           if (payloadText) headers["Message"] = payloadText.replace(/[\r\n]+/g, " ");
 
-          let bodyPayload;
-          if (config.passphrase) {
-            bodyPayload = await encryptBytes(sendingBytes);
-          } else {
-            bodyPayload = sendingBytes;
-          }
+          let bodyPayload = config.passphrase ? await encryptBytes(sendingBytes) : sendingBytes;
 
           const response = await fetch(`${cleanedServer}/${config.topic}`, {
             method: "PUT",
@@ -1231,7 +1236,7 @@
       const container = document.getElementById("chat-container");
       container.innerHTML = "";
 
-      const filtered = messages.filter(m => m.sessionId === activeSessionId);
+      const filtered = messages.filter(m => m.sessionId === activeThreadId);
 
       filtered.forEach(m => {
         const row = document.createElement("div");
@@ -1288,8 +1293,25 @@
 
         if (m.isFromUser) {
           const deliveryIcon = document.createElement("span");
-          deliveryIcon.className = `delivery-icon ${m.isDelivered ? "delivered" : "pending"}`;
-          deliveryIcon.textContent = m.isDelivered ? "✓" : "🕒";
+          deliveryIcon.className = "delivery-icon";
+
+          if (m.pipelineStatus === "processing") {
+            deliveryIcon.textContent = "🧠";
+            deliveryIcon.title = "Agent is thinking / executing tools...";
+          } else if (m.pipelineStatus === "received") {
+            deliveryIcon.textContent = "✓";
+            deliveryIcon.className += " delivered";
+            deliveryIcon.title = "Received by GAIA bridge";
+          } else if (m.pipelineStatus === "completed" || m.isDelivered) {
+            deliveryIcon.textContent = "✓✓";
+            deliveryIcon.className += " delivered";
+            deliveryIcon.title = "Response completed";
+          } else {
+            deliveryIcon.textContent = "🕒";
+            deliveryIcon.className += " pending";
+            deliveryIcon.title = "In flight / waiting for bridge...";
+          }
+
           metaRow.appendChild(deliveryIcon);
         }
 
@@ -1340,8 +1362,8 @@
     function saveSettings() {
       config.serverUrl = document.getElementById("cfg-server").value.trim() || "https://ntfy.sh";
       config.topic = document.getElementById("cfg-topic").value.trim();
-      config.targetId = document.getElementById("cfg-target-id").value.trim() || "node-kevin-pa";
-      config.senderId = document.getElementById("cfg-sender-id").value.trim() || "user-kevin";
+      config.targetId = document.getElementById("cfg-target-id").value.trim() || "gaia-desktop";
+      config.senderId = document.getElementById("cfg-sender-id").value.trim() || "kevin-web";
       config.hmacSecret = document.getElementById("cfg-hmac-secret").value.trim();
       config.passphrase = document.getElementById("cfg-passphrase").value.trim();
       config.authorization = document.getElementById("cfg-authorization").value.trim();
