@@ -511,15 +511,22 @@ class NtfyChatViewModel: ObservableObject {
                             }
                         }
                         
-                        // Decrypt
+                        // Decrypt with Plaintext Fallback
                         var displayText: String
                         if let crypto = self.cryptoHelper {
                             let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
                             if !trimmedRaw.isEmpty {
-                                if let decrypted = crypto.decrypt(base64Payload: trimmedRaw) { displayText = decrypted }
-                                else { displayText = trimmedRaw.hasPrefix("{") ? trimmedRaw : "" }
-                            } else if fetchedAttachmentUrl != nil { displayText = "" }
-                            else { continue }
+                                if let decrypted = crypto.decrypt(base64Payload: trimmedRaw) {
+                                    displayText = decrypted
+                                } else {
+                                    // Fallback to raw text so unencrypted tool alerts aren't dropped
+                                    displayText = trimmedRaw
+                                }
+                            } else if fetchedAttachmentUrl != nil {
+                                displayText = ""
+                            } else {
+                                continue
+                            }
                         } else {
                             displayText = rawText
                             if displayText.isEmpty && fetchedAttachmentUrl == nil { continue }
@@ -555,40 +562,49 @@ class NtfyChatViewModel: ObservableObject {
                         if displayText.hasPrefix("You received a file:") { displayText = "⚠️ Unable to load attachment content." }
                         
                         // Extract Routing Headers / Tags
-                        var msgThreadId = "main"
+                        var msgThreadId: String? = nil
                         var msgAgentId: String? = nil
-                        var senderType = "server"
                         var senderId = ""
-                        var targetClient = "*"
+                        let tags = payload.tags ?? []
                         
-                        if let tags = payload.tags {
-                            for tag in tags {
-                                if tag.hasPrefix("tid:") { msgThreadId = String(tag.dropFirst(4)) }
-                                else if tag.hasPrefix("sid:") { msgThreadId = String(tag.dropFirst(4)) }
-                                else if tag.hasPrefix("agent:") { msgAgentId = String(tag.dropFirst(6)) }
-                                else if tag.hasPrefix("client:") { senderId = String(tag.dropFirst(7)) }
-                            }
+                        for tag in tags {
+                            if tag.hasPrefix("tid:") { msgThreadId = String(tag.dropFirst(4)) }
+                            else if tag.hasPrefix("sid:") { msgThreadId = String(tag.dropFirst(4)) }
+                            else if tag.hasPrefix("agent:") { msgAgentId = String(tag.dropFirst(6)) }
+                            else if tag.hasPrefix("client:") { senderId = String(tag.dropFirst(7)) }
                         }
                         
-                        let msgTime = Date(timeIntervalSince1970: TimeInterval(payload.time))
                         let title = payload.title ?? ""
-                        let isUser = !title.contains("[") && !title.contains("Assistant") && !title.contains("System") && !title.contains("GAIA")
+                        let hasClientTag = tags.contains { $0.hasPrefix("client:") }
                         
-                        if isUser {
-                            senderType = "client"
-                            if !senderId.isEmpty && senderId != bridgeSenderId {
-                                continue // Sibling client message dropped
-                            }
+                        // Origin Guard: Only messages explicitly bearing client tags are user messages
+                        let isUser = hasClientTag
+                        
+                        // Drop sibling client echoes
+                        if isUser && !senderId.isEmpty && senderId != self.bridgeSenderId {
+                            continue
                         }
+                        
+                        // Resolve Thread: User defaults to "main", Agent notifications default to "alerts"
+                        let effectiveThreadId = msgThreadId ?? (isUser ? "main" : "alerts")
+                        let msgTime = Date(timeIntervalSince1970: TimeInterval(payload.time))
                         
                         await MainActor.run {
-                            // Ensure Thread Exists
-                            if let idx = self.sessions.firstIndex(where: { $0.id == msgThreadId }) {
-                                if !self.sessions[idx].isPinned { self.sessions[idx].agentId = msgAgentId ?? self.sessions[idx].agentId }
+                            // Ensure Target Thread Exists
+                            if let idx = self.sessions.firstIndex(where: { $0.id == effectiveThreadId }) {
+                                if !self.sessions[idx].isPinned { 
+                                    self.sessions[idx].agentId = msgAgentId ?? self.sessions[idx].agentId 
+                                }
                                 self.saveSessions()
                             } else {
-                                let titleStr = (msgThreadId == "alerts") ? "🔔 System Alerts" : "# \(msgThreadId)"
-                                let s = ChatSession(id: msgThreadId, title: titleStr, createdAt: msgTime, agentId: msgAgentId ?? self.targetAgent, isPinned: false)
+                                let titleStr = (effectiveThreadId == "alerts") ? "🔔 System Alerts" : "# \(effectiveThreadId)"
+                                let s = ChatSession(
+                                    id: effectiveThreadId,
+                                    title: titleStr,
+                                    createdAt: msgTime,
+                                    agentId: msgAgentId ?? self.targetAgent,
+                                    isPinned: (effectiveThreadId == "main" || effectiveThreadId == "alerts")
+                                )
                                 self.sessions.append(s)
                                 self.saveSessions()
                             }
@@ -598,24 +614,49 @@ class NtfyChatViewModel: ObservableObject {
                                 $0.isFromUser && ($0.id == payload.id || ($0.id.hasPrefix("temp-") && ($0.text.trimmingCharacters(in: .whitespacesAndNewlines) == displayText.trimmingCharacters(in: .whitespacesAndNewlines) || ($0.localImageData != nil && fetchedAttachmentUrl != nil))))
                             }) {
                                 var updated = self.messages[localIndex]
-                                updated = ChatMessage(id: payload.id, sessionId: msgThreadId, text: displayText.isEmpty ? updated.text : displayText, isFromUser: true, timestamp: msgTime, actions: payload.actions, attachmentUrl: fetchedAttachmentUrl ?? updated.attachmentUrl, localImageData: updated.localImageData, isDelivered: true, pipelineStatus: "received")
+                                updated = ChatMessage(
+                                    id: payload.id,
+                                    sessionId: effectiveThreadId,
+                                    text: displayText.isEmpty ? updated.text : displayText,
+                                    isFromUser: true,
+                                    timestamp: msgTime,
+                                    actions: payload.actions,
+                                    attachmentUrl: fetchedAttachmentUrl ?? updated.attachmentUrl,
+                                    localImageData: updated.localImageData,
+                                    isDelivered: true,
+                                    pipelineStatus: "received"
+                                )
                                 self.messages[localIndex] = updated
                                 self.saveMessagesToDisk()
                             } else if !self.messages.contains(where: { $0.id == payload.id }) {
-                                let msg = ChatMessage(id: payload.id, sessionId: msgThreadId, text: displayText, isFromUser: isUser, timestamp: msgTime, actions: payload.actions, attachmentUrl: fetchedAttachmentUrl, isDelivered: true, pipelineStatus: "completed")
+                                let msg = ChatMessage(
+                                    id: payload.id,
+                                    sessionId: effectiveThreadId,
+                                    text: displayText,
+                                    isFromUser: isUser,
+                                    timestamp: msgTime,
+                                    actions: payload.actions,
+                                    attachmentUrl: fetchedAttachmentUrl,
+                                    isDelivered: true,
+                                    pipelineStatus: "completed"
+                                )
                                 self.messages.append(msg)
                                 self.messages.sort { $0.timestamp < $1.timestamp }
                                 
-                                // Auto-complete the preceding user message if the agent replied
+                                // Auto-complete preceding user prompt if agent replied
                                 if !isUser {
-                                    if let lastUserIdx = self.messages.lastIndex(where: { $0.isFromUser && $0.sessionId == msgThreadId }) {
+                                    if let lastUserIdx = self.messages.lastIndex(where: { $0.isFromUser && $0.sessionId == effectiveThreadId }) {
                                         self.messages[lastUserIdx].pipelineStatus = "completed"
                                     }
                                 }
                                 self.saveMessagesToDisk()
                                 
                                 if msgTime >= startTime.addingTimeInterval(-5) && !isUser {
-                                    self.scheduleLocalNotification(title: "GAIA (@\(msg.agentId))", body: displayText.isEmpty ? "Sent an attachment" : displayText)
+                                    let alertTitle = title.isEmpty ? "GAIA (@\(msgAgentId ?? self.targetAgent))" : title
+                                    self.scheduleLocalNotification(
+                                        title: alertTitle,
+                                        body: displayText.isEmpty ? "Sent an attachment" : displayText
+                                    )
                                 }
                             }
                         }
