@@ -18,6 +18,7 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+from email.header import Header
 
 try:
     import httpx
@@ -28,6 +29,18 @@ from .crypto import SecurityEngine
 from .backend_adapter import BackendAdapter
 
 logger = logging.getLogger(__name__)
+
+#----------------------------------------------------------------------------
+
+def _encode_header_val(val: Optional[str]) -> Optional[str]:
+    """Encodes non-ASCII strings into RFC 2047 format for safe HTTP header transport."""
+    if not val:
+        return val
+    try:
+        val.encode("ascii")
+        return val
+    except UnicodeEncodeError:
+        return Header(val, "utf-8").encode()
 
 #----------------------------------------------------------------------------
 
@@ -449,7 +462,7 @@ class NtfyClient:
             outbound_message = self.security.encrypt_text(outbound_message)
 
         headers = {
-            "Title": formatted_title,
+            "Title": _encode_header_val(formatted_title),
             "Priority": prio_val,
             "Tags": tags_header,
             "X-Sender-Type": "server",
@@ -458,7 +471,7 @@ class NtfyClient:
             "X-Thread-ID": thread_id,
             "X-Message-Type": msg_type,
         }
-
+        
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
@@ -470,7 +483,8 @@ class NtfyClient:
                 if attachment_bytes:
                     headers["Filename"] = filename or "enc_file.bin"
                     if outbound_message:
-                        headers["Message"] = outbound_message.replace("\r", " ").replace("\n", " ")
+                        clean_msg = outbound_message.replace("\r", " ").replace("\n", " ")
+                        headers["Message"] = _encode_header_val(clean_msg)
                     resp = await client.put(publish_url, content=attachment_bytes, headers=headers)
                 else:
                     resp = await client.post(publish_url, content=outbound_message.encode("utf-8"), headers=headers)
