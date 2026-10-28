@@ -9,7 +9,8 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 # ==============================================================================
-
+import os
+import sys
 import asyncio
 import json
 import logging
@@ -28,6 +29,7 @@ from .backend_adapter import BackendAdapter
 
 logger = logging.getLogger(__name__)
 
+#----------------------------------------------------------------------------
 
 class NtfyClient:
     """Async engine for ntfy stream listening, payload verification, and outbound posting

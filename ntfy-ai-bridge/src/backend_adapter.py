@@ -2,7 +2,7 @@
 # Project: GAIA Messenger
 # File:    backend_adapter.py
 # Author:  Kevin Cazabon (kevin@cazabon.com)
-# Version: 1.1.0 / 10/13/2026
+# Version: 1.2.0 / 10/21/2026
 #
 # Copyright (c) 2026 Kevin Cazabon
 #
@@ -10,6 +10,7 @@
 # https://opensource.org/licenses/MIT
 # ==============================================================================
 
+import asyncio
 import re
 import uuid
 import json
@@ -18,9 +19,16 @@ import logging
 from typing import Dict, Any, Optional, List, Union, Tuple
 import httpx
 
+# Graceful import of VectorMemory
+try:
+    from vector_memory import VectorMemory
+    VECTOR_MEMORY_AVAILABLE = True
+except ImportError:
+    VECTOR_MEMORY_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
-
+#---------------------------------------------------------------------------
 class BackendAdapter:
     """Universal adapter supporting both GAIA Agent APIs and standard OpenAI-compatible local LLM servers (Lemonade, vLLM, Ollama, etc.)."""
 
@@ -34,13 +42,25 @@ class BackendAdapter:
         self.system_prompt = config.get("system_prompt", "You are a helpful personal assistant.")
         self.timeout = float(config.get("timeout_seconds", 300))
         
+        # Vector Memory configuration
+        self.enable_memory = config.get("enable_vector_memory", True)
+        self.vector_store_dir = config.get("vector_store_dir", "~/.gaia/vector_store")
+        self._vm: Optional[Any] = None
+
+        if self.enable_memory and VECTOR_MEMORY_AVAILABLE:
+            try:
+                self._vm = VectorMemory.get_instance(self.vector_store_dir)
+                logger.info(f"VectorMemory initialized for BackendAdapter at '{self.vector_store_dir}'.")
+            except Exception as e:
+                logger.warning(f"Could not initialize VectorMemory: {e}")
+
         # Maps (client_session_id, agent_type) -> gaia_internal_session_id
         self._gaia_session_cache: Dict[Tuple[str, str], str] = {}
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "ntfy-ai-bridge/1.1",
+            "User-Agent": "ntfy-ai-bridge/1.2",
         }
         if self.backend_type == "gaia":
             headers["X-GAIA-UI"] = "1"
@@ -55,6 +75,37 @@ class BackendAdapter:
             return match.group(1).lower(), match.group(2).strip()
         return None, prompt
 
+    def _get_semantic_context(self, prompt: str) -> str:
+        """Retrieves semantic vector memories and matching emails from ChromaDB only.
+        Core user context, axioms, and graph entities are handled natively by the agent.
+        """
+        if not self._vm or not self.enable_memory:
+            return ""
+
+        clean = prompt.strip().lower()
+        if len(clean) < 8 or clean in {"hi", "hello", "status", "ping", "test", "help", "clear"}:
+            return ""
+
+        try:
+            results = self._vm.search_all(prompt, n_results=3)
+            snippets = []
+
+            if results.get("memories"):
+                for m in results["memories"]:
+                    snippets.append(f"• {m}")
+
+            if results.get("emails"):
+                for e in results["emails"][:2]:
+                    clean_email = e.replace("\n\n", " ").strip()
+                    snippets.append(f"• [Email] {clean_email[:250]}...")
+
+            if snippets:
+                return "[SEMANTIC MEMORY RECALL]\n" + "\n".join(snippets)
+        except Exception as e:
+            logger.warning(f"Semantic memory pre-fetch failed: {e}")
+
+        return ""
+
     async def query(
         self, 
         prompt: str, 
@@ -64,23 +115,34 @@ class BackendAdapter:
         image_mime: str = "image/jpeg"
     ) -> str:
         """Main entry point. Routes queries to GAIA or standard OpenAI Chat Completions API."""
-        # DIAGNOSTIC: Print exact inputs received
         logger.info(f"[DIAG] query() prompt='{prompt[:40]}' | agent_or_model='{agent_or_model}' | session_id='{session_id}'")
 
         extracted_agent, cleaned_prompt = self._extract_agent_from_prompt(prompt)
         
         # Priority order: explicitly passed agent -> extracted @mention -> default fallback
         target = (agent_or_model or extracted_agent or self.target_id).strip()
-        
-        # Use cleaned prompt so agents don't see leading '@agent' in their context
         final_prompt = cleaned_prompt if cleaned_prompt else prompt
 
-        logger.info(f"[{self.backend_type.upper()}] Routing query to target='{target}', session_id='{session_id}'")
+        # Retrieve relevant long-term memory & email history before dispatching
+        memory_context = await asyncio.to_thread(self._get_semantic_context, final_prompt)
+
+        logger.info(f"[{self.backend_type.upper()}] Routing query to target='{target}', session_id='{session_id}' (Memory context: {'Found' if memory_context else 'None'})")
 
         if self.backend_type == "gaia":
-            return await self._query_gaia(final_prompt, target_agent=target, client_session_id=session_id)
+            return await self._query_gaia(
+                final_prompt, 
+                target_agent=target, 
+                client_session_id=session_id,
+                memory_context=memory_context
+            )
         else:
-            return await self._query_openai(final_prompt, target_model=target, image_bytes=image_bytes, image_mime=image_mime)
+            return await self._query_openai(
+                final_prompt, 
+                target_model=target, 
+                image_bytes=image_bytes, 
+                image_mime=image_mime,
+                memory_context=memory_context
+            )
 
     async def list_available_targets(self) -> List[str]:
         """Queries available agents (GAIA) or downloaded models (OpenAI/Lemonade)."""
@@ -111,16 +173,27 @@ class BackendAdapter:
     # -------------------------------------------------------------------------
     # GAIA API Implementation
     # -------------------------------------------------------------------------
-    async def _query_gaia(self, prompt: str, target_agent: str, client_session_id: Optional[str]) -> str:
+    async def _query_gaia(
+        self, 
+        prompt: str, 
+        target_agent: str, 
+        client_session_id: Optional[str],
+        memory_context: str = ""
+    ) -> str:
         """Dispatches query to GAIA's POST /api/chat/send with session mapping and error recovery."""
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             client_sid = client_session_id or f"default_{target_agent}"
             active_gaia_sid = await self._resolve_gaia_session(client_sid, target_agent, client)
 
+            # For GAIA, prepend context lightly so the agent has direct background without needing a tool call
+            payload_message = prompt
+            if memory_context:
+                payload_message = f"{memory_context}\n\n[USER DIRECTIVE]\n{prompt}"
+            
             url = f"{self.api_url}/api/chat/send"
             payload = {
                 "session_id": active_gaia_sid,
-                "message": prompt,
+                "message": payload_message,
                 "agent_type": target_agent,
                 "agent_id": target_agent,
                 "stream": False
@@ -128,7 +201,6 @@ class BackendAdapter:
 
             resp = await client.post(url, json=payload, headers=self._get_headers())
 
-            # Handle session expiration or invalid session ID gracefully
             if resp.status_code in (404, 422) and "session" in resp.text.lower():
                 logger.warning(f"Session '{active_gaia_sid[:8]}' rejected by GAIA ({resp.status_code}). Refreshing session...")
                 self._gaia_session_cache.pop((client_sid, target_agent), None)
@@ -142,14 +214,6 @@ class BackendAdapter:
             if "application/json" in content_type:
                 return self._extract_text_from_json(resp.json())
             return resp.text
-
-    async def _resolve_gaia_session(self, client_sid: str, agent_type: str, client: httpx.AsyncClient) -> str:
-        """Resolves or maps a client session to a valid GAIA server session ID."""
-        cache_key = (client_sid, agent_type)
-        if cache_key in self._gaia_session_cache:
-            return self._gaia_session_cache[cache_key]
-
-        return await self._create_gaia_session(agent_type, client_sid, client)
 
     def _parse_client_sid(self, client_sid: str) -> tuple[str, str, str]:
         """Parses 'sender_id::agent_id::thread_id' into individual components."""
@@ -169,7 +233,7 @@ class BackendAdapter:
         sender_id, _, thread_id = self._parse_client_sid(client_sid)
         title_marker = f"ntfy [{thread_id}] {sender_id}"
 
-        # 1. Check GAIA's existing sessions to reconnect after bridge reboots
+        # Check GAIA's existing sessions to reconnect after bridge reboots
         try:
             sessions_url = f"{self.api_url}/api/sessions"
             resp = await client.get(sessions_url, headers=self._get_headers(), timeout=10.0)
@@ -177,7 +241,6 @@ class BackendAdapter:
                 data = resp.json()
                 items = data if isinstance(data, list) else data.get("sessions") or data.get("data", [])
                 for session in items:
-                    # Match on thread slot and sender identity
                     if title_marker in session.get("title", ""):
                         existing_sid = session.get("id") or session.get("session_id")
                         if existing_sid:
@@ -187,7 +250,6 @@ class BackendAdapter:
         except Exception as err:
             logger.warning(f"Could not query GAIA existing sessions: {err}")
 
-        # 2. No matching session found; create a fresh one
         return await self._create_gaia_session(agent_type, client_sid, client)
 
     async def _create_gaia_session(self, agent_type: str, client_sid: str, client: httpx.AsyncClient) -> str:
@@ -219,7 +281,6 @@ class BackendAdapter:
         except Exception as err:
             logger.error(f"Failed connecting to GAIA /api/sessions: {err}")
 
-        # Fallback to passing client_sid directly if /api/sessions is unreachable
         return client_sid
 
     # -------------------------------------------------------------------------
@@ -230,7 +291,8 @@ class BackendAdapter:
         prompt: str, 
         target_model: str, 
         image_bytes: Optional[bytes] = None, 
-        image_mime: str = "image/jpeg"
+        image_mime: str = "image/jpeg",
+        memory_context: str = ""
     ) -> str:
         endpoint = "/chat/completions" if self.api_url.endswith(("/v1", "/api/v1")) else "/v1/chat/completions"
         url = f"{self.api_url}{endpoint}"
@@ -244,9 +306,18 @@ class BackendAdapter:
         else:
             user_content = prompt
 
+        # Dynamically enrich the system prompt with retrieved memory for this turn
+        active_system_prompt = self.system_prompt
+        if memory_context:
+            active_system_prompt += (
+                f"\n\n[RELEVANT LONG-TERM MEMORY & EMAIL CONTEXT]\n"
+                f"{memory_context}\n"
+                f"Use this verified context naturally if relevant to the user's message."
+            )
+
         messages = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         messages.append({"role": "user", "content": user_content})
 
         payload = {
