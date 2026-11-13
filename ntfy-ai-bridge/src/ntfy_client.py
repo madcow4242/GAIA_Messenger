@@ -68,6 +68,9 @@ class NtfyClient:
 
     async def start(self) -> None:
         """Starts the persistent inbound SSE listener loop."""
+        # Yield to allow Uvicorn to finish startup
+        await asyncio.sleep(0) 
+        
         self._running = True
         logger.info(f"Starting ntfy listener stream for topic '{self.topic}' at {self.server_url}...")
 
@@ -85,7 +88,9 @@ class NtfyClient:
                 )
 
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
+                # 1. Properly disable timeouts and 2. Follow redirects
+                timeout = httpx.Timeout(None)
+                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                     async with client.stream("GET", stream_url, headers=headers) as response:
                         response.raise_for_status()
                         retry_delay = 2
@@ -114,6 +119,7 @@ class NtfyClient:
 
     def stop(self) -> None:
         """Stops the inbound streaming loop."""
+        logger.info("Stopping the inbound streaming loop.")
         self._running = False
 
     def _extract_file_path(self, text: str) -> Optional[Path]:
@@ -255,11 +261,18 @@ class NtfyClient:
             if len(self._processed_msg_ids) > 1000:
                 self._processed_msg_ids.clear()
 
+        tags = [str(t).strip() for t in (frame.get("tags") or [])]
+
+        # Fast-path drop for server-emitted ACKs before decryption or INFO logging
+        if any(t.startswith("ack:") for t in tags):
+            logger.debug(f"[Ignored Outbound ACK] id={msg_id} tags={tags}")
+            return
+
         title = frame.get("title", "").strip()
         raw_message = frame.get("message", "").strip()
         attachment = frame.get("attachment") or {}
 
-        logger.info(f"[Inbound Frame] id={msg_id} title='{title}' tags={frame.get('tags')}")
+        logger.info(f"[Inbound Frame] id={msg_id} title='{title}' tags={tags}")
 
         # 1. Echo Suppression: Drop notifications emitted by server bridges
         if (
@@ -338,7 +351,7 @@ class NtfyClient:
                         else f"Bearer {self.auth_token}"
                     )
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                     resp = await client.get(attachment_url, headers=auth_headers)
                     if resp.status_code == 200:
                         raw_bytes = resp.content
@@ -478,7 +491,7 @@ class NtfyClient:
         cleaned_server = self.server_url.rstrip("/")
         publish_url = f"{cleaned_server}/{self.topic}"
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             try:
                 if attachment_bytes:
                     headers["Filename"] = filename or "enc_file.bin"
