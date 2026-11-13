@@ -580,7 +580,7 @@ class NtfyClient:
             "X-Target-Client": target_client,
             "X-Thread-ID": thread_id,
             "X-Message-Type": "ack",
-            "Tags": f"tid:{thread_id},ack:{status}"
+            "Tags": f"tid:{thread_id},ack:{status},server:{self.instance_id}"
         }
 
         if self.auth_token:
